@@ -640,6 +640,7 @@ def create_chess_ui() -> gr.Blocks:
         
         def continue_auto_play_chain(fen: str, delay: float, enabled: bool, should_continue: bool):
             """Continue auto-play chain if enabled."""
+            global ai_vs_ai_running
             if should_continue and enabled and ai_vs_ai_running:
                 # Small delay before next move
                 time.sleep(min(delay, 0.5))
