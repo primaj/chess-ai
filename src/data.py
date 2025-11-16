@@ -273,17 +273,25 @@ def parse_games_chunk(args: Tuple) -> Tuple[List[Tuple], Dict[str, int]]:
     Parse a chunk of games in parallel.
     
     Args:
-        args: Tuple of (games_list, min_rating)
+        args: Tuple of (pgn_strings_list, min_rating)
     
     Returns:
         Tuple of (samples, move_vocab_dict) where move_vocab_dict maps UCI to sequential IDs
     """
-    games_list, min_rating = args
+    pgn_strings_list, min_rating = args
     samples = []
     move_vocab = {}  # Local move vocabulary for this chunk
     next_id = 0
     
-    for game in games_list:
+    # Parse PGN strings into games
+    for pgn_string in pgn_strings_list:
+        try:
+            game = chess.pgn.read_game(io.StringIO(pgn_string))
+            if game is None:
+                continue
+        except Exception:
+            continue
+        
         game_samples = parse_single_game(game, min_rating)
         if game_samples is None:
             continue
@@ -358,17 +366,27 @@ def pgn_to_samples(pgn_path: str, max_games: Optional[int] = None,
             return cached
     
     # Read all games first (needed for parallel processing)
-    games = []
+    # Store as PGN strings for pickleability in multiprocessing
+    pgn_strings = []
+    games = []  # Also keep games for sequential parsing
     with open_pgn_file(pgn_path) as f:
         game_count = 0
         pbar = tqdm(desc="Reading games")
         while True:
             if max_games is not None and game_count >= max_games:
                 break
+            
+            # Read game and convert to string for multiprocessing
             game = chess.pgn.read_game(f)
             if game is None:
                 break
-            games.append(game)
+            
+            # Convert game to PGN string for serialization
+            exporter = chess.pgn.StringExporter(headers=True, variations=True, comments=False)
+            pgn_string = game.accept(exporter)
+            
+            pgn_strings.append(pgn_string)
+            games.append(game)  # Keep for sequential fallback
             game_count += 1
             pbar.update(1)
         pbar.close()
@@ -376,17 +394,17 @@ def pgn_to_samples(pgn_path: str, max_games: Optional[int] = None,
     print(f"Read {len(games)} games, parsing...")
     
     # Parse games (parallel or sequential)
-    if num_parse_workers > 1 and len(games) > 100:  # Only parallelize for larger datasets
-        # Split games into chunks for parallel processing
-        chunk_size = max(100, len(games) // (num_parse_workers * 2))
-        game_chunks = [games[i:i + chunk_size] for i in range(0, len(games), chunk_size)]
+    if num_parse_workers > 1 and len(pgn_strings) > 100:  # Only parallelize for larger datasets
+        # Split PGN strings into chunks for parallel processing
+        chunk_size = max(100, len(pgn_strings) // (num_parse_workers * 2))
+        pgn_chunks = [pgn_strings[i:i + chunk_size] for i in range(0, len(pgn_strings), chunk_size)]
         
         # Parse chunks in parallel
         with Pool(processes=num_parse_workers) as pool:
-            chunk_args = [(chunk, min_rating) for chunk in game_chunks]
+            chunk_args = [(chunk, min_rating) for chunk in pgn_chunks]
             results = list(tqdm(
                 pool.imap(parse_games_chunk, chunk_args),
-                total=len(game_chunks),
+                total=len(pgn_chunks),
                 desc="Parsing games"
             ))
         
