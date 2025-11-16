@@ -540,31 +540,49 @@ def create_chess_ui() -> gr.Blocks:
         # Auto-play function that continues until game ends
         def start_auto_play(fen: str, delay: float):
             """Start continuous auto-play."""
-            global ai_vs_ai_running
+            global ai_vs_ai_running, current_board
             
             if not ai_vs_ai_running:
                 ai_vs_ai_running = True
             
+            # Update board from FEN
+            try:
+                current_board = chess.Board(fen)
+            except:
+                current_board = chess.Board()
+            
             # Make moves continuously until game ends
-            current_fen = fen
             max_moves = 200  # Safety limit
             
-            for _ in range(max_moves):
+            for move_num in range(max_moves):
                 if not ai_vs_ai_running:
                     break
                 
-                # Make one move
-                new_fen, status, history, continue_flag = ai_vs_ai_step(current_fen, delay)
-                current_fen = new_fen
-                
-                # Check if game ended
-                if not continue_flag:
+                # Check if game is over
+                if current_board.is_game_over():
+                    ai_vs_ai_running = False
                     break
                 
-                # Small delay between moves
-                time.sleep(delay)
+                # Make one move
+                new_fen, status, history, continue_flag = ai_vs_ai_step(current_board.fen(), delay)
+                
+                # Update board
+                try:
+                    current_board = chess.Board(new_fen)
+                except:
+                    break
+                
+                # Check if game ended
+                if not continue_flag or current_board.is_game_over():
+                    ai_vs_ai_running = False
+                    break
+                
+                # Small delay between moves (but don't block too long)
+                # Use a shorter delay to keep UI responsive
+                time.sleep(min(delay, 0.5))
             
-            return current_fen, get_game_status(), get_move_history(), False
+            ai_vs_ai_running = False
+            return current_board.fen(), get_game_status(), get_move_history(), False
         
         # Auto-play button
         auto_play_trigger.click(
@@ -572,9 +590,6 @@ def create_chess_ui() -> gr.Blocks:
             inputs=[chessboard, ai_vs_ai_delay],
             outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle]
         )
-        
-        # Better approach: Use a Timer component if available, or use JavaScript
-        # For now, let's use a simpler approach with a hidden button that auto-clicks
     
     return demo
 
