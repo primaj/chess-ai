@@ -627,7 +627,8 @@ def create_chess_ui() -> gr.Blocks:
                 return new_fen, status, history, False
         
         # Auto-play with incremental UI updates using event chaining
-        auto_play_continue_state = gr.State(value=False)
+        # Use a counter to ensure state changes trigger events
+        auto_play_counter = gr.State(value=0)
         
         def trigger_auto_play(fen: str, delay: float):
             """Trigger auto-play - makes first move."""
@@ -636,20 +637,22 @@ def create_chess_ui() -> gr.Blocks:
             result = start_auto_play(fen, delay, True)
             # Extract continue flag (4th element) to chain next move
             continue_flag = result[3] if len(result) > 3 else False
-            # Return result with continue flag as state value
-            return result[0], result[1], result[2], result[3], continue_flag
+            # Increment counter to trigger change event
+            counter = 1 if continue_flag else 0
+            # Return result with counter to trigger next move
+            return result[0], result[1], result[2], result[3], counter
         
-        def continue_auto_play_chain(fen: str, delay: float, enabled: bool, should_continue: bool):
+        def continue_auto_play_chain(fen: str, delay: float, enabled: bool, counter: int):
             """Continue auto-play chain if enabled."""
             global ai_vs_ai_running
             
-            # Only continue if flag is True and auto-play is enabled
-            if not should_continue:
-                return fen, get_game_status(), get_move_history(), enabled, False
+            # Only continue if counter > 0 (meaning we should continue) and auto-play is enabled
+            if counter == 0:
+                return fen, get_game_status(), get_move_history(), enabled, 0
             
             if not enabled or not ai_vs_ai_running:
                 ai_vs_ai_running = False
-                return fen, get_game_status(), get_move_history(), enabled, False
+                return fen, get_game_status(), get_move_history(), enabled, 0
             
             # Small delay before next move
             time.sleep(min(delay, 0.5))
@@ -658,21 +661,24 @@ def create_chess_ui() -> gr.Blocks:
             result = start_auto_play(fen, delay, enabled)
             continue_flag = result[3] if len(result) > 3 else False
             
-            # Return with continue flag to trigger next iteration
-            return result[0], result[1], result[2], result[3], continue_flag
+            # Increment counter to trigger next iteration (or set to 0 to stop)
+            next_counter = counter + 1 if continue_flag else 0
+            
+            # Return with incremented counter to trigger next iteration
+            return result[0], result[1], result[2], result[3], next_counter
         
         # Auto-play button
         auto_play_trigger.click(
             fn=trigger_auto_play,
             inputs=[chessboard, ai_vs_ai_delay],
-            outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle, auto_play_continue_state]
+            outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle, auto_play_counter]
         )
         
-        # Chain: when continue_state becomes True, automatically trigger next move
-        auto_play_continue_state.change(
+        # Chain: when counter changes, automatically trigger next move
+        auto_play_counter.change(
             fn=continue_auto_play_chain,
-            inputs=[chessboard, ai_vs_ai_delay, ai_vs_ai_toggle, auto_play_continue_state],
-            outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle, auto_play_continue_state],
+            inputs=[chessboard, ai_vs_ai_delay, ai_vs_ai_toggle, auto_play_counter],
+            outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle, auto_play_counter],
             show_progress=False
         )
     
