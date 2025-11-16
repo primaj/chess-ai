@@ -636,21 +636,30 @@ def create_chess_ui() -> gr.Blocks:
             result = start_auto_play(fen, delay, True)
             # Extract continue flag (4th element) to chain next move
             continue_flag = result[3] if len(result) > 3 else False
-            return result + (continue_flag,)
+            # Return result with continue flag as state value
+            return result[0], result[1], result[2], result[3], continue_flag
         
         def continue_auto_play_chain(fen: str, delay: float, enabled: bool, should_continue: bool):
             """Continue auto-play chain if enabled."""
             global ai_vs_ai_running
-            if should_continue and enabled and ai_vs_ai_running:
-                # Small delay before next move
-                time.sleep(min(delay, 0.5))
-                result = start_auto_play(fen, delay, enabled)
-                continue_flag = result[3] if len(result) > 3 else False
-                return result + (continue_flag,)
-            else:
-                if not enabled:
-                    ai_vs_ai_running = False
+            
+            # Only continue if flag is True and auto-play is enabled
+            if not should_continue:
                 return fen, get_game_status(), get_move_history(), enabled, False
+            
+            if not enabled or not ai_vs_ai_running:
+                ai_vs_ai_running = False
+                return fen, get_game_status(), get_move_history(), enabled, False
+            
+            # Small delay before next move
+            time.sleep(min(delay, 0.5))
+            
+            # Make next move
+            result = start_auto_play(fen, delay, enabled)
+            continue_flag = result[3] if len(result) > 3 else False
+            
+            # Return with continue flag to trigger next iteration
+            return result[0], result[1], result[2], result[3], continue_flag
         
         # Auto-play button
         auto_play_trigger.click(
