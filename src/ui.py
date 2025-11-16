@@ -440,7 +440,9 @@ def create_chess_ui() -> gr.Blocks:
                         step=0.1,
                         label="Delay between moves (seconds)"
                     )
-                ai_vs_ai_play_btn = gr.Button("▶️ Play Next Move (AI vs AI)", visible=True)
+                with gr.Row():
+                    ai_vs_ai_play_btn = gr.Button("▶️ Play Next Move (AI vs AI)", visible=True)
+                    auto_play_trigger = gr.Button("🔄 Auto-Play", visible=True, variant="secondary")
                 
             with gr.Column(scale=1):
                 # Status and analysis
@@ -519,7 +521,7 @@ def create_chess_ui() -> gr.Blocks:
             
             if enabled and not ai_vs_ai_running:
                 ai_vs_ai_running = True
-                status = "AI vs AI started. Click 'Play Next Move' to advance the game."
+                status = "AI vs AI enabled. Click 'Auto-Play' to start continuous gameplay."
                 return fen, status, get_move_history(), True
             elif not enabled and ai_vs_ai_running:
                 ai_vs_ai_running = False
@@ -534,6 +536,45 @@ def create_chess_ui() -> gr.Blocks:
             inputs=[chessboard, ai_vs_ai_toggle, ai_vs_ai_delay],
             outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle]
         )
+        
+        # Auto-play function that continues until game ends
+        def start_auto_play(fen: str, delay: float):
+            """Start continuous auto-play."""
+            global ai_vs_ai_running
+            
+            if not ai_vs_ai_running:
+                ai_vs_ai_running = True
+            
+            # Make moves continuously until game ends
+            current_fen = fen
+            max_moves = 200  # Safety limit
+            
+            for _ in range(max_moves):
+                if not ai_vs_ai_running:
+                    break
+                
+                # Make one move
+                new_fen, status, history, continue_flag = ai_vs_ai_step(current_fen, delay)
+                current_fen = new_fen
+                
+                # Check if game ended
+                if not continue_flag:
+                    break
+                
+                # Small delay between moves
+                time.sleep(delay)
+            
+            return current_fen, get_game_status(), get_move_history(), False
+        
+        # Auto-play button
+        auto_play_trigger.click(
+            fn=start_auto_play,
+            inputs=[chessboard, ai_vs_ai_delay],
+            outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle]
+        )
+        
+        # Better approach: Use a Timer component if available, or use JavaScript
+        # For now, let's use a simpler approach with a hidden button that auto-clicks
     
     return demo
 
