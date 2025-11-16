@@ -627,7 +627,7 @@ def create_chess_ui() -> gr.Blocks:
                 return new_fen, status, history, False
         
         # Auto-play with incremental UI updates using event chaining
-        # Use a counter to ensure state changes trigger events
+        # Use a timestamp-based counter to ensure state changes trigger events
         auto_play_counter = gr.State(value=0)
         
         def trigger_auto_play(fen: str, delay: float):
@@ -637,8 +637,8 @@ def create_chess_ui() -> gr.Blocks:
             result = start_auto_play(fen, delay, True)
             # Extract continue flag (4th element) to chain next move
             continue_flag = result[3] if len(result) > 3 else False
-            # Increment counter to trigger change event
-            counter = 1 if continue_flag else 0
+            # Use timestamp to ensure unique value for change event
+            counter = int(time.time() * 1000) if continue_flag else 0
             # Return result with counter to trigger next move
             return result[0], result[1], result[2], result[3], counter
         
@@ -647,12 +647,13 @@ def create_chess_ui() -> gr.Blocks:
             global ai_vs_ai_running
             
             # Only continue if counter > 0 (meaning we should continue) and auto-play is enabled
+            # If counter is 0, return inputs unchanged to avoid interfering with other buttons
             if counter == 0:
-                return fen, get_game_status(), get_move_history(), enabled, 0
+                return fen, "", "", enabled, 0
             
             if not enabled or not ai_vs_ai_running:
                 ai_vs_ai_running = False
-                return fen, get_game_status(), get_move_history(), enabled, 0
+                return fen, "", "", enabled, 0
             
             # Small delay before next move
             time.sleep(min(delay, 0.5))
@@ -661,10 +662,10 @@ def create_chess_ui() -> gr.Blocks:
             result = start_auto_play(fen, delay, enabled)
             continue_flag = result[3] if len(result) > 3 else False
             
-            # Increment counter to trigger next iteration (or set to 0 to stop)
-            next_counter = counter + 1 if continue_flag else 0
+            # Use new timestamp to trigger next iteration (or set to 0 to stop)
+            next_counter = int(time.time() * 1000) if continue_flag else 0
             
-            # Return with incremented counter to trigger next iteration
+            # Return with new counter to trigger next iteration
             return result[0], result[1], result[2], result[3], next_counter
         
         # Auto-play button
@@ -675,6 +676,7 @@ def create_chess_ui() -> gr.Blocks:
         )
         
         # Chain: when counter changes, automatically trigger next move
+        # Only trigger when counter > 0 to avoid interfering with other buttons
         auto_play_counter.change(
             fn=continue_auto_play_chain,
             inputs=[chessboard, ai_vs_ai_delay, ai_vs_ai_toggle, auto_play_counter],
