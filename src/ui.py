@@ -639,22 +639,23 @@ def create_chess_ui() -> gr.Blocks:
             continue_flag = result[3] if len(result) > 3 else False
             # Use timestamp to ensure unique value for change event
             counter = int(time.time() * 1000) if continue_flag else 0
-            # Return result with counter to trigger next move
-            return result[0], result[1], result[2], result[3], counter
+            # Enable toggle and return result with counter to trigger next move
+            return result[0], result[1], result[2], True, counter
         
         def continue_auto_play_chain(fen: str, delay: float, enabled: bool, counter: int):
             """Continue auto-play chain if enabled."""
             global ai_vs_ai_running
             
-            # Only continue if counter > 0 (meaning we should continue) and auto-play is enabled
+            # Only continue if counter > 0 (meaning we should continue) and auto-play is running
             # If counter is 0, return immediately - this should not block other buttons
             if counter == 0:
                 # Return current state without changes - this should not interfere with other buttons
                 # We return the same values to avoid triggering unnecessary updates
                 return fen, get_game_status(), get_move_history(), enabled, 0
             
-            if not enabled or not ai_vs_ai_running:
-                ai_vs_ai_running = False
+            # Check if auto-play should continue - use ai_vs_ai_running flag, not toggle state
+            # The toggle might be False initially, but we want to continue if ai_vs_ai_running is True
+            if not ai_vs_ai_running:
                 return fen, get_game_status(), get_move_history(), enabled, 0
             
             # Small delay before next move
