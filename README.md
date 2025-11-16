@@ -63,6 +63,7 @@ Additional options:
 - `--hidden_dim`: Model hidden dimension (default: 256)
 - `--n_layers`: Number of transformer layers (default: 6)
 - `--lr`: Learning rate (default: 1e-4)
+- `--val_split`: Validation split ratio (default: 0.1, i.e., 10%)
 - `--no_cache`: Disable caching of parsed PGN data (caching is enabled by default)
 - `--cache_dir`: Directory for cache files (default: "cache")
 
@@ -84,8 +85,11 @@ import chess
 model, info = load_model('models/minichess_transformer.pt')
 board = chess.Board()
 
+# Get move encoder from checkpoint (automatically loaded)
+move_encoder = info.get('move_encoder')
+
 # Predict top moves
-top_moves = predict_move_from_legal(model, board, top_k=5)
+top_moves = predict_move_from_legal(model, board, move_encoder=move_encoder, top_k=5)
 for move, prob in top_moves:
     print(f"{move.uci()}: {prob:.4f}")
 
@@ -134,6 +138,11 @@ The model uses supervised learning with two loss components:
 - **Value loss**: Mean squared error between predicted value and game result
 
 Total loss = Policy Loss + 0.5 × Value Loss
+
+**Improvements in v0.2.0:**
+- **Validation Split**: Training now includes a validation set (10% by default) for proper model evaluation
+- **Game Phase Filtering**: Value learning uses game phase filtering - early positions use neutral value to improve signal quality
+- **Model Portability**: Checkpoints now include `MoveEncoder` state, making models fully portable
 
 ## Future Enhancements
 

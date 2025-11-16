@@ -228,25 +228,28 @@ The 0.5 weighting on value loss is arbitrary and not tuned. This suggests value 
    - Update parameters via AdamW optimizer
 
 2. **Checkpointing**:
-   - Saves checkpoint after each epoch
-   - Saves "best" model if validation loss improves (but validation is currently disabled - `val_loader = None`)
+   - Saves checkpoint after each epoch (includes model state, optimizer state, config, and move encoder)
+   - Saves "best" model if validation loss improves (validation is now enabled with proper train/val split)
 
 **Optimizer**: AdamW with learning rate 1e-4, weight decay 1e-5
 
 **Gradient Clipping**: Applied with max_norm=1.0 to prevent exploding gradients
 
-### Critical Training Issues
+### Training Improvements (Implemented)
 
-1. **No Validation Split**: The code sets `val_loader = None` (line 259), meaning:
-   - No validation during training
-   - No early stopping
-   - No model selection based on validation performance
-   - "Best model" saving is never triggered
+1. **Validation Split**: ✅ **FIXED** - Now implements proper train/val split:
+   - Uses `random_split` to create train/validation datasets
+   - Default validation split: 10% (configurable via `--val_split`)
+   - Validation loop runs during training
+   - Best model saving based on validation loss now works
+   - Enables proper model selection and overfitting detection
 
-2. **Value Target Problem**: All positions from a game share the same outcome label:
-   - A position where White is clearly losing but eventually wins still gets +1.0 label
-   - This teaches the model incorrect position evaluations
-   - Should use position-specific evaluations (e.g., from Stockfish) or at least filter by game phase
+2. **Value Target Problem**: ✅ **IMPROVED** - Game phase filtering implemented:
+   - Early game positions (first 30% of moves) use neutral value (0.0) instead of game outcome
+   - Mid-to-endgame positions use actual game outcome
+   - Reduces incorrect value signals from early positions
+   - Value head should learn more accurate position-specific evaluations
+   - Note: Still uses game outcome, but filtered by phase for better signal quality
 
 3. **No Data Augmentation**: 
    - No board rotations/flips
@@ -289,15 +292,16 @@ The 0.5 weighting on value loss is arbitrary and not tuned. This suggests value 
 - Strategic patterns (weak squares, pawn structure)
 - Tactical patterns (threats, combinations)
 
-**Critical Problem**: The training signal is **game outcome**, not position evaluation:
-- A position from move 5 of a game where White eventually won gets label +1.0
-- But that position might actually be equal or even slightly worse for White
-- The model learns: "Positions from games White won tend to be good for White" (which is true on average but wrong for individual positions)
+**Training Signal**: The training signal is **game outcome**, filtered by game phase:
+- **Early game (first 30% of moves)**: Uses neutral value (0.0) to avoid learning incorrect evaluations
+- **Mid-to-endgame (last 70% of moves)**: Uses actual game outcome
+- This improves signal quality by reducing noise from early positions where outcome is less correlated with position quality
+- The model still learns: "Positions from games White won tend to be good for White" but only for positions where this correlation is stronger
 
-**Better Approach**: Should use:
+**Remaining Limitation**: Still uses game outcome rather than position-specific evaluations. For further improvement, could use:
 - Position-specific evaluations (e.g., Stockfish scores)
-- Or at least filter by game phase (early/mid/endgame)
-- Or use temporal difference learning (predict outcome from current position, not from game start)
+- Temporal difference learning (predict outcome from current position)
+- But current phase filtering is a significant improvement
 
 ### Attention Patterns
 
@@ -333,18 +337,18 @@ However, without explicit 2D structure, the model must learn these relationships
 5. Apply softmax: `policy_probs = softmax(policy_logits)`
 6. Get top-k moves: `topk(policy_probs, k)`
 
-**Critical Limitation**: The `predict_move_from_legal()` function (lines 128-173) has a **major bug**:
-- It gets policy logits from the model
-- But then **ignores them** and returns uniform probabilities over legal moves
-- The comment says "This is a placeholder - real implementation needs move_encoder"
-- This means move prediction **doesn't actually work** without the training `MoveEncoder`
+**Implementation**: ✅ **FIXED** - The `predict_move_from_legal()` function now works correctly:
+- Gets policy logits from the model
+- Uses `MoveEncoder` (loaded from checkpoint) to map move IDs to UCI strings
+- Filters to legal moves only
+- Extracts probabilities for legal moves from model output
+- Renormalizes probabilities over legal moves
+- Handles moves not in vocabulary gracefully (assigns 0.0 probability)
+- Returns top-k moves sorted by probability
 
-**To Fix**: Need to:
-1. Save `MoveEncoder` with model checkpoint
-2. Load it during inference
-3. Map move IDs to UCI strings
-4. Filter to legal moves only
-5. Renormalize probabilities
+**Requirements**: 
+- Model checkpoint must include `MoveEncoder` state (now saved automatically)
+- If `MoveEncoder` is missing, falls back to uniform distribution with warning
 
 ### Position Evaluation (`src/inference.py:179-208`)
 
@@ -463,9 +467,11 @@ However, without explicit 2D structure, the model must learn these relationships
 
 ### 6. Inference Requires Training MoveEncoder
 
-**Problem**: Can't use a trained model without the `MoveEncoder` from training, making model portability difficult.
-
-**Solution**: Save `MoveEncoder` with checkpoint, or use canonical move vocabulary.
+**Status**: ✅ **FIXED** - `MoveEncoder` is now saved with all checkpoints:
+- Checkpoints include: `move_to_id`, `id_to_move`, and `next_move_id`
+- Model loading automatically reconstructs `MoveEncoder` from checkpoint
+- Enables proper inference without requiring original training data
+- Models are now portable and self-contained
 
 ### 7. No Gradient Accumulation
 
@@ -485,11 +491,11 @@ However, without explicit 2D structure, the model must learn these relationships
 
 ### High Priority
 
-1. **Fix Inference**: Implement proper move prediction that uses model outputs
-2. **Add Validation Split**: Implement proper train/val split and validation loop
-3. **Fix Value Learning**: Use position-specific evaluations or filter by game phase
-4. **Save MoveEncoder**: Include `MoveEncoder` in model checkpoints
-5. **Add Move Legality**: Filter illegal moves in policy head or use legal-move-only vocabulary
+1. ✅ **Fix Inference**: ✅ **COMPLETED** - Move prediction now properly uses model outputs with `MoveEncoder`
+2. ✅ **Add Validation Split**: ✅ **COMPLETED** - Proper train/val split implemented with validation loop
+3. ✅ **Fix Value Learning**: ✅ **IMPROVED** - Game phase filtering implemented (early positions use neutral value)
+4. ✅ **Save MoveEncoder**: ✅ **COMPLETED** - `MoveEncoder` included in all checkpoints
+5. ✅ **Add Move Legality**: ✅ **COMPLETED** - Inference filters to legal moves and renormalizes probabilities
 
 ### Medium Priority
 
