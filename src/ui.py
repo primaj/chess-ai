@@ -661,8 +661,8 @@ def create_chess_ui() -> gr.Blocks:
             # Small delay before next move
             time.sleep(min(delay, 0.5))
             
-            # Make next move
-            result = start_auto_play(fen, delay, enabled)
+            # Make next move - always pass True for enabled since we're using ai_vs_ai_running flag
+            result = start_auto_play(fen, delay, True)
             continue_flag = result[3] if len(result) > 3 else False
             
             # Use new timestamp to trigger next iteration (or set to 0 to stop)
