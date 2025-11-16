@@ -251,6 +251,19 @@ The 0.5 weighting on value loss is arbitrary and not tuned. This suggests value 
    - Value head should learn more accurate position-specific evaluations
    - Note: Still uses game outcome, but filtered by phase for better signal quality
 
+3. **Parallel PGN Parsing**: ✅ **ADDED** - Multiprocessing support for faster parsing:
+   - Uses `multiprocessing.Pool` to parse games in parallel
+   - Only activates for datasets > 100 games with `--parse_workers > 1`
+   - Games serialized as PGN strings for pickleability
+   - Move encoders merged after parallel processing
+   - **Expected speedup**: 2-4x on multi-core CPUs
+
+4. **DataLoader Optimizations**: ✅ **ADDED** - GPU-optimized data loading:
+   - Auto-detects optimal number of workers: `min(8, cpu_count())`
+   - `pin_memory=True` for CUDA (faster CPU→GPU transfers)
+   - `persistent_workers=True` to avoid worker restart overhead
+   - **Expected speedup**: 1.5-2x for data loading, 10-20% for GPU transfers
+
 3. **No Data Augmentation**: 
    - No board rotations/flips
    - No position mirroring
