@@ -236,35 +236,65 @@ def get_move_history() -> str:
     if current_board is None or len(current_board.move_stack) == 0:
         return "No moves yet."
     
-    # Create a game from the board
-    game = chess.pgn.Game()
-    game.headers["White"] = "Player"
-    game.headers["Black"] = "AI"
-    
-    node = game
-    temp_board = chess.Board()
-    
-    for move in current_board.move_stack:
-        node = node.add_variation(move)
-        temp_board.push(move)
-    
-    # Get PGN string
-    exporter = chess.pgn.StringExporter(headers=False, variations=False, comments=False)
-    pgn_string = game.accept(exporter)
-    
-    # Format as numbered moves
-    moves = pgn_string.strip().split('\n')[-1] if pgn_string else ""
-    if moves:
-        move_list = moves.split()
-        formatted = []
-        for i in range(0, len(move_list), 2):
-            move_num = (i // 2) + 1
-            white_move = move_list[i] if i < len(move_list) else ""
-            black_move = move_list[i + 1] if i + 1 < len(move_list) else ""
-            formatted.append(f"{move_num}. {white_move} {black_move}")
-        return "\n".join(formatted)
-    
-    return moves if moves else "No moves yet."
+    try:
+        # Create a game from the board by replaying moves
+        game = chess.pgn.Game()
+        game.headers["White"] = "Player"
+        game.headers["Black"] = "AI"
+        
+        node = game
+        temp_board = chess.Board()
+        
+        # Replay moves from the move stack
+        for move in current_board.move_stack:
+            # Check if move is legal in current position
+            if move in temp_board.legal_moves:
+                node = node.add_variation(move)
+                temp_board.push(move)
+            else:
+                # If move is not legal, try to get SAN notation from the move itself
+                # This handles cases where the board state might have changed
+                try:
+                    san = temp_board.san(move) if move in temp_board.pseudo_legal_moves else move.uci()
+                    # Just add the move notation without pushing if it's not legal
+                    # This is a fallback for edge cases
+                    break
+                except:
+                    # If we can't process the move, stop here
+                    break
+        
+        # Get PGN string
+        exporter = chess.pgn.StringExporter(headers=False, variations=False, comments=False)
+        pgn_string = game.accept(exporter)
+        
+        # Format as numbered moves
+        moves = pgn_string.strip().split('\n')[-1] if pgn_string else ""
+        if moves:
+            move_list = moves.split()
+            formatted = []
+            for i in range(0, len(move_list), 2):
+                move_num = (i // 2) + 1
+                white_move = move_list[i] if i < len(move_list) else ""
+                black_move = move_list[i + 1] if i + 1 < len(move_list) else ""
+                formatted.append(f"{move_num}. {white_move} {black_move}")
+            return "\n".join(formatted)
+        
+        return moves if moves else "No moves yet."
+    except Exception as e:
+        # Fallback: just show move count and UCI moves
+        try:
+            move_list = [move.uci() for move in current_board.move_stack]
+            if move_list:
+                formatted = []
+                for i in range(0, len(move_list), 2):
+                    move_num = (i // 2) + 1
+                    white_move = move_list[i] if i < len(move_list) else ""
+                    black_move = move_list[i + 1] if i + 1 < len(move_list) else ""
+                    formatted.append(f"{move_num}. {white_move} {black_move}")
+                return "\n".join(formatted)
+            return "No moves yet."
+        except:
+            return f"Error displaying moves: {str(e)}"
 
 
 def ai_vs_ai_step(fen: str, delay: float) -> Tuple[str, str, str, bool]:
