@@ -70,5 +70,22 @@ Key Conventions:
 4. Implement proper experiment tracking and model checkpointing.
 5. Use version control (e.g., git) for tracking changes in code and configurations.
 
+Documentation and Version Control:
+- **ALWAYS** update documentation when making code changes:
+  - Update TECHNICAL_DOCUMENTATION.md with any architectural or implementation changes
+  - Update CHANGELOG.md with all changes (Added, Changed, Fixed, Removed)
+  - Update README.md if user-facing features or usage changes
+- **ALWAYS** create a new git branch for changes:
+  - Use descriptive branch names (e.g., `feature/new-model`, `fix/inference-bug`, `refactor/data-loading`)
+  - Create branch before making changes: `git checkout -b branch-name`
+- **ALWAYS** make commits with short, concise messages:
+  - Use imperative mood ("Fix inference bug" not "Fixed inference bug")
+  - Keep messages under 72 characters when possible
+  - First line should be a summary, additional details in body if needed
+  - Examples: "Add validation split", "Fix move prediction", "Update docs"
+- Commit frequently with logical groupings:
+  - Separate commits for different changes (e.g., one for code, one for docs)
+  - Don't mix unrelated changes in a single commit
+
 Refer to the official documentation of PyTorch, Transformers, Diffusers, and Gradio for best practices and up-to-date APIs.
       
