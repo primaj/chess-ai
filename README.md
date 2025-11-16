@@ -26,6 +26,15 @@ The model consists of:
 
 ## Installation
 
+### Prerequisites
+
+- **Python 3.10+** (required for `gradio-chessboard`)
+- pip package manager
+
+**Note:** If you're using Python 3.9 or earlier, see [UPGRADE_PYTHON.md](UPGRADE_PYTHON.md) for upgrade instructions.
+
+### Setup Steps
+
 1. Clone this repository
 2. Create and activate a virtual environment (recommended):
 ```bash
