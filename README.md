@@ -49,6 +49,29 @@ This will create a virtual environment, activate it, and install all dependencie
 
 ## Usage
 
+### Interactive Chess UI
+
+Launch the web-based chess interface to play against the AI or watch AI vs AI games:
+
+```bash
+python src/ui.py
+```
+
+This opens a web interface at `http://127.0.0.1:7860` where you can:
+- **Load a trained model**: Browse and select a `.pt` checkpoint file
+- **Play against the AI**: Make moves by dragging pieces on the interactive chessboard
+- **Watch AI vs AI**: Enable auto-play mode to watch the AI play against itself
+- **View analysis**: See position evaluation and top predicted moves
+- **Game controls**: Reset game, undo moves, or manually trigger AI moves
+
+**Features:**
+- Interactive chessboard with drag-and-drop moves
+- Real-time position evaluation
+- Top move predictions with probabilities
+- Move history display
+- AI vs AI mode with configurable speed
+- Game end detection (checkmate, stalemate, draws)
+
 ### Training
 
 **Option 1: Jupyter Notebook (Recommended for interactive use)**
@@ -156,11 +179,13 @@ chess-ai/
 │   ├── data.py               # PGN parsing and dataset utilities
 │   ├── train.py              # Training script
 │   ├── inference.py          # Inference/evaluation utilities
-│   └── download.py           # Lichess database download utility
+│   ├── download.py           # Lichess database download utility
+│   └── ui.py                 # Interactive web UI (Gradio)
 ├── data/                     # PGN files directory
 ├── models/                   # Saved model checkpoints
 ├── cache/                    # Cached parsed PGN data (auto-generated)
 ├── requirements.txt          # Python dependencies
+├── train_notebook.ipynb      # Jupyter notebook for training
 └── README.md                # This file
 ```
 

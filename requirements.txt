@@ -4,4 +4,6 @@ tqdm>=4.65.0
 numpy>=1.24.0
 zstandard>=0.21.0
 requests>=2.31.0
+gradio>=4.0.0
+gradio-chessboard>=0.0.10
 
