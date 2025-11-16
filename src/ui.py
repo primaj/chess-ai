@@ -491,20 +491,18 @@ def create_chess_ui() -> gr.Blocks:
             outputs=[chessboard, game_status, move_history]
         )
         
-        # AI vs AI toggle
-        ai_vs_ai_toggle.change(
-            fn=toggle_ai_vs_ai,
-            inputs=[chessboard, ai_vs_ai_toggle, ai_vs_ai_delay],
-            outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle]
-        )
-        
         # AI vs AI play button for manual stepping
         def play_ai_vs_ai_move(fen: str, delay: float):
             """Play one AI vs AI move."""
             global ai_vs_ai_running
+            
+            # Start AI vs AI if not already running
             if not ai_vs_ai_running:
                 ai_vs_ai_running = True
+            
+            # Make a move
             new_fen, status, history, continue_flag = ai_vs_ai_step(fen, delay)
+            
             # Update toggle state based on continue flag
             return new_fen, status, history, continue_flag
         
@@ -514,40 +512,27 @@ def create_chess_ui() -> gr.Blocks:
             outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle]
         )
         
-        # Auto-play AI vs AI with timer
-        def auto_play_check():
-            """Check if AI vs AI should continue and make a move automatically."""
-            global ai_vs_ai_running, current_board
+        # AI vs AI toggle handler
+        def on_toggle_change(fen: str, enabled: bool, delay: float):
+            """Handle toggle change - start/stop AI vs AI mode."""
+            global ai_vs_ai_running
             
-            if not ai_vs_ai_running or current_board is None:
-                return (
-                    current_board.fen() if current_board else chess.Board().fen(),
-                    get_game_status(),
-                    get_move_history(),
-                    False
-                )
-            
-            if current_board.is_game_over():
+            if enabled and not ai_vs_ai_running:
+                ai_vs_ai_running = True
+                status = "AI vs AI started. Click 'Play Next Move' to advance the game."
+                return fen, status, get_move_history(), True
+            elif not enabled and ai_vs_ai_running:
                 ai_vs_ai_running = False
-                return (
-                    current_board.fen(),
-                    get_game_status(),
-                    get_move_history(),
-                    False
-                )
-            
-            # Make a move
-            delay = 1.0  # Use default delay for auto-play
-            new_fen, status, history, continue_flag = ai_vs_ai_step(current_board.fen(), delay)
-            
-            return new_fen, status, history, continue_flag
+                status = "AI vs AI stopped."
+                return fen, status, get_move_history(), False
+            else:
+                return fen, get_game_status(), get_move_history(), enabled
         
-        # Set up periodic auto-play when AI vs AI is enabled
-        # This will check every 2 seconds and make moves if enabled
-        demo.load(
-            fn=auto_play_check,
-            outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle],
-            every=2.0  # Check every 2 seconds
+        # Set up toggle handler
+        ai_vs_ai_toggle.change(
+            fn=on_toggle_change,
+            inputs=[chessboard, ai_vs_ai_toggle, ai_vs_ai_delay],
+            outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle]
         )
     
     return demo
