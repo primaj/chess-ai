@@ -626,70 +626,41 @@ def create_chess_ui() -> gr.Blocks:
                 ai_vs_ai_running = False
                 return new_fen, status, history, False
         
-        # Auto-play button - triggers first move
-        def trigger_auto_play(fen: str, delay: float):
-            """Trigger auto-play by enabling it and making first move."""
-            global ai_vs_ai_running
-            ai_vs_ai_running = True
-            return start_auto_play(fen, delay, True)
-        
-        auto_play_trigger.click(
-            fn=trigger_auto_play,
-            inputs=[chessboard, ai_vs_ai_delay],
-            outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle]
-        )
-        
-        # Chain auto-play: when toggle is True and game continues, automatically trigger next move
-        def continue_auto_play(fen: str, delay: float, enabled: bool):
-            """Continue auto-play if enabled."""
-            if enabled and ai_vs_ai_running:
-                # Small delay before next move
-                time.sleep(min(delay, 0.5))
-                return start_auto_play(fen, delay, enabled)
-            else:
-                return fen, get_game_status(), get_move_history(), False
-        
-        # When toggle is enabled and game continues, automatically continue
-        # We'll use the toggle change event to chain moves
-        def on_auto_play_continue(fen: str, delay: float, enabled: bool):
-            """Continue auto-play when enabled."""
-            if enabled and ai_vs_ai_running:
-                return continue_auto_play(fen, delay, enabled)
-            return fen, get_game_status(), get_move_history(), enabled
-        
-        # Set up chaining: when chessboard updates from auto-play and toggle is enabled, continue
-        # We'll use a separate event that only fires when auto-play makes a move
-        # Create a hidden state to track if we should continue
+        # Auto-play with incremental UI updates using event chaining
         auto_play_continue_state = gr.State(value=False)
         
-        def check_and_continue_auto_play(fen: str, delay: float, enabled: bool, should_continue: bool):
-            """Check if we should continue auto-play."""
-            if should_continue and enabled and ai_vs_ai_running:
-                time.sleep(min(delay, 0.5))
-                return continue_auto_play(fen, delay, enabled) + (True,)  # Return should_continue flag
-            return fen, get_game_status(), get_move_history(), enabled, False
-        
-        # Chain: when auto-play makes a move and returns continue_flag=True, trigger next move
-        # We'll modify the auto-play trigger to set up the chain
-        def trigger_auto_play_with_chain(fen: str, delay: float):
-            """Trigger auto-play and set up continuation."""
+        def trigger_auto_play(fen: str, delay: float):
+            """Trigger auto-play - makes first move."""
             global ai_vs_ai_running
             ai_vs_ai_running = True
             result = start_auto_play(fen, delay, True)
-            # If game continues, the last element (continue_flag) will be True
-            should_continue = result[3] if len(result) > 3 else False
-            return result + (should_continue,)
+            # Extract continue flag (4th element) to chain next move
+            continue_flag = result[3] if len(result) > 3 else False
+            return result + (continue_flag,)
         
-        # Update auto-play trigger to include continue state
+        def continue_auto_play_chain(fen: str, delay: float, enabled: bool, should_continue: bool):
+            """Continue auto-play chain if enabled."""
+            if should_continue and enabled and ai_vs_ai_running:
+                # Small delay before next move
+                time.sleep(min(delay, 0.5))
+                result = start_auto_play(fen, delay, enabled)
+                continue_flag = result[3] if len(result) > 3 else False
+                return result + (continue_flag,)
+            else:
+                if not enabled:
+                    ai_vs_ai_running = False
+                return fen, get_game_status(), get_move_history(), enabled, False
+        
+        # Auto-play button
         auto_play_trigger.click(
-            fn=trigger_auto_play_with_chain,
+            fn=trigger_auto_play,
             inputs=[chessboard, ai_vs_ai_delay],
             outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle, auto_play_continue_state]
         )
         
-        # When continue state is True, automatically trigger next move
+        # Chain: when continue_state becomes True, automatically trigger next move
         auto_play_continue_state.change(
-            fn=check_and_continue_auto_play,
+            fn=continue_auto_play_chain,
             inputs=[chessboard, ai_vs_ai_delay, ai_vs_ai_toggle, auto_play_continue_state],
             outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle, auto_play_continue_state],
             show_progress=False
