@@ -264,7 +264,7 @@ The 0.5 weighting on value loss is arbitrary and not tuned. This suggests value 
    - `persistent_workers=True` to avoid worker restart overhead
    - **Expected speedup**: 1.5-2x for data loading, 10-20% for GPU transfers
 
-3. **No Data Augmentation**: 
+5. **No Data Augmentation**: 
    - No board rotations/flips
    - No position mirroring
    - Could double training data with minimal effort
