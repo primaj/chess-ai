@@ -679,11 +679,13 @@ def create_chess_ui() -> gr.Blocks:
         
         # Chain: when counter changes, automatically trigger next move
         # Only trigger when counter > 0 to avoid interfering with other buttons
+        # Use queue=False to prevent blocking other events
         auto_play_counter.change(
             fn=continue_auto_play_chain,
             inputs=[chessboard, ai_vs_ai_delay, ai_vs_ai_toggle, auto_play_counter],
             outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle, auto_play_counter],
-            show_progress=False
+            show_progress=False,
+            queue=False
         )
     
     return demo
