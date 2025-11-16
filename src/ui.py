@@ -647,13 +647,15 @@ def create_chess_ui() -> gr.Blocks:
             global ai_vs_ai_running
             
             # Only continue if counter > 0 (meaning we should continue) and auto-play is enabled
-            # If counter is 0, return inputs unchanged to avoid interfering with other buttons
+            # If counter is 0, return immediately - this should not block other buttons
             if counter == 0:
-                return fen, "", "", enabled, 0
+                # Return current state without changes - this should not interfere with other buttons
+                # We return the same values to avoid triggering unnecessary updates
+                return fen, get_game_status(), get_move_history(), enabled, 0
             
             if not enabled or not ai_vs_ai_running:
                 ai_vs_ai_running = False
-                return fen, "", "", enabled, 0
+                return fen, get_game_status(), get_move_history(), enabled, 0
             
             # Small delay before next move
             time.sleep(min(delay, 0.5))
