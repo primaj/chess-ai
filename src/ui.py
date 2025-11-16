@@ -70,7 +70,10 @@ def reset_game() -> Tuple[str, str]:
     Returns:
         Tuple of (FEN string, status message)
     """
-    global current_board
+    global current_board, ai_vs_ai_running
+    # Stop any running AI vs AI
+    ai_vs_ai_running = False
+    # Create a fresh board (this clears move_stack automatically)
     current_board = chess.Board()
     return current_board.fen(), "Game reset. White to move."
 
@@ -193,8 +196,14 @@ def handle_user_move(fen: str) -> Tuple[str, str, str]:
         current_board = chess.Board()
     
     # Update board from FEN
+    # Note: When updating from FEN, we lose the move_stack history
+    # So we need to reconstruct it or work with the FEN directly
     try:
         new_board = chess.Board(fen)
+        # If the FEN represents a different position than our current board,
+        # we need to update. But FEN doesn't preserve move history.
+        # For move history, we rely on the board's move_stack.
+        # If the board was reset or changed externally, move_stack will be empty.
         current_board = new_board
     except Exception as e:
         return current_board.fen() if current_board else chess.Board().fen(), f"❌ Invalid position: {str(e)}", ""
@@ -313,8 +322,16 @@ def ai_vs_ai_step(fen: str, delay: float) -> Tuple[str, str, str, bool]:
     if current_model is None or current_move_encoder is None:
         return fen, "❌ No model loaded.", "", False
     
+    # Always use current_board if it exists and matches, otherwise create from FEN
+    # But be careful: if we create from FEN, we lose move_stack history
     if current_board is None:
         current_board = chess.Board(fen)
+    else:
+        # Check if FEN matches current board
+        if current_board.fen() != fen:
+            # FEN doesn't match - this means board was reset or changed externally
+            # Create new board from FEN (this will have empty move_stack)
+            current_board = chess.Board(fen)
     
     # Check if game is over
     if current_board.is_game_over():
@@ -347,7 +364,8 @@ def ai_vs_ai_step(fen: str, delay: float) -> Tuple[str, str, str, bool]:
         return current_board.fen(), status, move_history, continue_game
     except Exception as e:
         ai_vs_ai_running = False
-        return current_board.fen(), f"❌ Error: {str(e)}", get_move_history(), False
+        # Don't call get_move_history() in error case to avoid recursion
+        return current_board.fen() if current_board else fen, f"❌ Error: {str(e)}", "Error getting move history", False
 
 
 def toggle_ai_vs_ai(fen: str, enabled: bool, delay: float) -> Tuple[str, str, str, bool]:
