@@ -430,7 +430,7 @@ def create_chess_ui() -> gr.Blocks:
                 gr.Markdown("## AI vs AI Mode")
                 with gr.Row():
                     ai_vs_ai_toggle = gr.Checkbox(
-                        label="Enable AI vs AI",
+                        label="Enable AI vs AI (Auto-play)",
                         value=False
                     )
                     ai_vs_ai_delay = gr.Slider(
@@ -440,6 +440,7 @@ def create_chess_ui() -> gr.Blocks:
                         step=0.1,
                         label="Delay between moves (seconds)"
                     )
+                ai_vs_ai_play_btn = gr.Button("▶️ Play Next Move (AI vs AI)", visible=True)
                 
             with gr.Column(scale=1):
                 # Status and analysis
@@ -498,8 +499,6 @@ def create_chess_ui() -> gr.Blocks:
         )
         
         # AI vs AI play button for manual stepping
-        ai_vs_ai_play_btn = gr.Button("▶️ Play Next Move (AI vs AI)", visible=True)
-        
         def play_ai_vs_ai_move(fen: str, delay: float):
             """Play one AI vs AI move."""
             global ai_vs_ai_running
