@@ -51,6 +51,16 @@ This will create a virtual environment, activate it, and install all dependencie
 
 ### Training
 
+**Option 1: Jupyter Notebook (Recommended for interactive use)**
+
+Open `train_notebook.ipynb` in Jupyter/VS Code and run the cells. The notebook will:
+- Download a Lichess PGN dataset
+- Configure training parameters
+- Train the model
+- Test inference
+
+**Option 2: Command Line**
+
 Place your PGN files in the `data/` directory, then run:
 
 ```bash
