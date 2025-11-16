@@ -585,57 +585,82 @@ def create_chess_ui() -> gr.Blocks:
             outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle]
         )
         
-        # Auto-play function that continues until game ends
-        def start_auto_play(fen: str, delay: float):
-            """Start continuous auto-play."""
+        # Auto-play function - does one move and schedules next
+        def start_auto_play(fen: str, delay: float, enabled: bool):
+            """Start auto-play - makes one move and returns, will be called again if enabled."""
             global ai_vs_ai_running, current_board
+            
+            if not enabled:
+                ai_vs_ai_running = False
+                return fen, get_game_status(), get_move_history(), False
             
             if not ai_vs_ai_running:
                 ai_vs_ai_running = True
             
-            # Update board from FEN
-            try:
-                current_board = chess.Board(fen)
-            except:
-                current_board = chess.Board()
-            
-            # Make moves continuously until game ends
-            max_moves = 200  # Safety limit
-            
-            for move_num in range(max_moves):
-                if not ai_vs_ai_running:
-                    break
-                
-                # Check if game is over
-                if current_board.is_game_over():
-                    ai_vs_ai_running = False
-                    break
-                
-                # Make one move
-                new_fen, status, history, continue_flag = ai_vs_ai_step(current_board.fen(), delay)
-                
-                # Update board
+            # Update board from FEN if needed
+            if current_board is None or current_board.fen() != fen:
                 try:
-                    current_board = chess.Board(new_fen)
+                    current_board = chess.Board(fen)
                 except:
-                    break
-                
-                # Check if game ended
-                if not continue_flag or current_board.is_game_over():
-                    ai_vs_ai_running = False
-                    break
-                
-                # Small delay between moves (but don't block too long)
-                # Use a shorter delay to keep UI responsive
-                time.sleep(min(delay, 0.5))
+                    current_board = chess.Board()
             
-            ai_vs_ai_running = False
-            return current_board.fen(), get_game_status(), get_move_history(), False
+            # Check if game is over
+            if current_board.is_game_over():
+                ai_vs_ai_running = False
+                return current_board.fen(), get_game_status(), get_move_history(), False
+            
+            # Make one move
+            new_fen, status, history, continue_flag = ai_vs_ai_step(current_board.fen(), delay)
+            
+            # Update board
+            try:
+                current_board = chess.Board(new_fen)
+            except:
+                ai_vs_ai_running = False
+                return fen, "Error updating board", history, False
+            
+            # If game continues and auto-play is enabled, return True to trigger next move
+            if continue_flag and enabled and ai_vs_ai_running:
+                return new_fen, status, history, True
+            else:
+                ai_vs_ai_running = False
+                return new_fen, status, history, False
         
-        # Auto-play button
+        # Auto-play button - triggers first move
+        def trigger_auto_play(fen: str, delay: float):
+            """Trigger auto-play by enabling it and making first move."""
+            global ai_vs_ai_running
+            ai_vs_ai_running = True
+            return start_auto_play(fen, delay, True)
+        
         auto_play_trigger.click(
-            fn=start_auto_play,
+            fn=trigger_auto_play,
             inputs=[chessboard, ai_vs_ai_delay],
+            outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle]
+        )
+        
+        # Chain auto-play: when toggle is True and game continues, automatically trigger next move
+        def continue_auto_play(fen: str, delay: float, enabled: bool):
+            """Continue auto-play if enabled."""
+            if enabled and ai_vs_ai_running:
+                # Small delay before next move
+                time.sleep(min(delay, 0.5))
+                return start_auto_play(fen, delay, enabled)
+            else:
+                return fen, get_game_status(), get_move_history(), False
+        
+        # When toggle is enabled and game continues, automatically continue
+        # We'll use the toggle change event to chain moves
+        def on_auto_play_continue(fen: str, delay: float, enabled: bool):
+            """Continue auto-play when enabled."""
+            if enabled and ai_vs_ai_running:
+                return continue_auto_play(fen, delay, enabled)
+            return fen, get_game_status(), get_move_history(), enabled
+        
+        # Set up chaining: when chessboard updates and auto-play is enabled, continue
+        chessboard.change(
+            fn=on_auto_play_continue,
+            inputs=[chessboard, ai_vs_ai_delay, ai_vs_ai_toggle],
             outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle]
         )
     
