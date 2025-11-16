@@ -64,6 +64,8 @@ Additional options:
 - `--n_layers`: Number of transformer layers (default: 6)
 - `--lr`: Learning rate (default: 1e-4)
 - `--val_split`: Validation split ratio (default: 0.1, i.e., 10%)
+- `--num_workers`: Number of DataLoader workers (default: auto-detect, min(8, cpu_count))
+- `--parse_workers`: Number of parallel workers for PGN parsing (default: 1, sequential)
 - `--no_cache`: Disable caching of parsed PGN data (caching is enabled by default)
 - `--cache_dir`: Directory for cache files (default: "cache")
 
@@ -111,6 +113,26 @@ The model trains on PGN (Portable Game Notation) files. You can obtain chess gam
 - [Chess.com](https://www.chess.com/)
 - [FICS](https://www.freechess.org/)
 
+### Downloading from Lichess
+
+Use the download utility to fetch PGN files directly:
+
+```bash
+# Download by date (YYYY-MM format)
+python src/download.py 2025-10
+
+# Download by full URL
+python src/download.py https://database.lichess.org/standard/lichess_db_standard_rated_2025-10.pgn.zst
+
+# Specify output directory
+python src/download.py 2025-10 --output data/
+```
+
+The download utility supports:
+- Resume interrupted downloads (automatically resumes if file exists)
+- Progress bar with download speed
+- Date-based shortcuts (e.g., `2025-10`)
+
 **Note:** The code automatically handles both `.pgn` and `.pgn.zst` (compressed) files. You can use Lichess database files directly without decompressing them.
 
 Place PGN files in the `data/` directory before training.
@@ -123,7 +145,8 @@ chess-ai/
 │   ├── model.py              # MiniChessTransformer architecture
 │   ├── data.py               # PGN parsing and dataset utilities
 │   ├── train.py              # Training script
-│   └── inference.py          # Inference/evaluation utilities
+│   ├── inference.py          # Inference/evaluation utilities
+│   └── download.py           # Lichess database download utility
 ├── data/                     # PGN files directory
 ├── models/                   # Saved model checkpoints
 ├── cache/                    # Cached parsed PGN data (auto-generated)

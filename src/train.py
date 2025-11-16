@@ -209,6 +209,10 @@ def main():
                        help="Disable cache for parsed PGN data")
     parser.add_argument("--cache_dir", type=str, default="cache",
                        help="Directory to store cache files (default: cache)")
+    parser.add_argument("--num_workers", type=int, default=None,
+                       help="Number of DataLoader workers (default: auto-detect, min(8, cpu_count))")
+    parser.add_argument("--parse_workers", type=int, default=1,
+                       help="Number of parallel workers for PGN parsing (default: 1, sequential)")
     
     args = parser.parse_args()
     
@@ -221,6 +225,12 @@ def main():
     print(f"  Hidden dim: {args.hidden_dim}")
     print(f"  Layers: {args.n_layers}")
     print(f"  Heads: {args.n_heads}")
+    print(f"  Parse workers: {args.parse_workers}")
+    
+    # Auto-detect num_workers if not specified
+    if args.num_workers is None:
+        args.num_workers = min(8, os.cpu_count() or 1)
+    print(f"  DataLoader workers: {args.num_workers}")
     
     # Load data
     print("\nLoading data...")
@@ -231,12 +241,14 @@ def main():
     
     # Load data and get move encoder
     from data import pgn_to_samples, ChessDataset, collate_fn
+    
     samples, move_encoder = pgn_to_samples(
         args.pgn_file,
         max_games=args.max_games,
         min_rating=args.min_rating,
         use_cache=args.use_cache,
-        cache_dir=args.cache_dir
+        cache_dir=args.cache_dir,
+        num_parse_workers=args.parse_workers
     )
     
     # Get move vocabulary size
@@ -254,12 +266,18 @@ def main():
     
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
     
+    # Use pin_memory for faster GPU transfers when using CUDA
+    pin_memory = (DEVICE == "cuda")
+    persistent_workers = (args.num_workers > 0)
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         collate_fn=collate_fn,
-        num_workers=0
+        num_workers=args.num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers
     )
     
     val_loader = DataLoader(
@@ -267,7 +285,9 @@ def main():
         batch_size=args.batch_size,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=0
+        num_workers=args.num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers
     )
     
     print(f"Train samples: {train_size}, Val samples: {val_size}")

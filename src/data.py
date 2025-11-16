@@ -16,6 +16,7 @@ import pickle
 import os
 import hashlib
 from pathlib import Path
+from multiprocessing import Pool, cpu_count
 
 
 # ============================================================
@@ -206,11 +207,132 @@ def load_cache(cache_path: str) -> Optional[Tuple[List[Tuple], MoveEncoder]]:
 
 
 # ============================================================
+#  PGN PARSING (HELPER FUNCTIONS)
+# ============================================================
+def parse_single_game(game: chess.pgn.Game, min_rating: Optional[int] = None) -> Optional[List[Tuple]]:
+    """
+    Parse a single game into samples.
+    
+    Args:
+        game: chess.pgn.Game instance
+        min_rating: Minimum player rating to include (None for all)
+    
+    Returns:
+        List of (piece_ids, side, move_id, outcome) tuples, or None if filtered out
+    """
+    # Filter by rating if specified
+    if min_rating is not None:
+        try:
+            white_elo = int(game.headers.get("WhiteElo", "0"))
+            black_elo = int(game.headers.get("BlackElo", "0"))
+            if white_elo < min_rating or black_elo < min_rating:
+                return None
+        except ValueError:
+            return None
+    
+    # Parse game result
+    result = game.headers.get("Result", "*")
+    if result == "1-0":
+        outcome = 1.0  # White wins
+    elif result == "0-1":
+        outcome = -1.0  # Black wins
+    elif result == "1/2-1/2":
+        outcome = 0.0  # Draw
+    else:
+        outcome = 0.0  # Unknown result
+    
+    # Extract positions and moves
+    board = game.board()
+    mainline_moves = list(game.mainline_moves())
+    total_moves = len(mainline_moves)
+    move_count = 0
+    samples = []
+    
+    for move in mainline_moves:
+        move_count += 1
+        piece_ids = board_to_tensor(board)
+        side = 0 if board.turn == chess.WHITE else 1
+        
+        # Filter value learning by game phase
+        game_phase = move_count / max(total_moves, 1)  # 0.0 to 1.0
+        
+        if game_phase < 0.3:  # First 30% of game
+            value_target = 0.0
+        else:
+            value_target = outcome
+        
+        # Store move UCI for later encoding (to avoid encoder conflicts in parallel)
+        samples.append((piece_ids, side, move.uci(), value_target))
+        board.push(move)
+    
+    return samples if samples else None
+
+
+def parse_games_chunk(args: Tuple) -> Tuple[List[Tuple], Dict[str, int]]:
+    """
+    Parse a chunk of games in parallel.
+    
+    Args:
+        args: Tuple of (games_list, min_rating)
+    
+    Returns:
+        Tuple of (samples, move_vocab_dict) where move_vocab_dict maps UCI to sequential IDs
+    """
+    games_list, min_rating = args
+    samples = []
+    move_vocab = {}  # Local move vocabulary for this chunk
+    next_id = 0
+    
+    for game in games_list:
+        game_samples = parse_single_game(game, min_rating)
+        if game_samples is None:
+            continue
+        
+        # Encode moves with local vocabulary
+        encoded_samples = []
+        for piece_ids, side, move_uci, value_target in game_samples:
+            if move_uci not in move_vocab:
+                move_vocab[move_uci] = next_id
+                next_id += 1
+            move_id = move_vocab[move_uci]
+            encoded_samples.append((piece_ids, side, move_id, value_target))
+        
+        samples.extend(encoded_samples)
+    
+    return samples, move_vocab
+
+
+def merge_move_encoders(move_vocabs: List[Dict[str, int]]) -> Tuple[MoveEncoder, Dict[int, int]]:
+    """
+    Merge multiple move vocabularies into a single MoveEncoder.
+    
+    Args:
+        move_vocabs: List of dictionaries mapping UCI moves to local IDs
+    
+    Returns:
+        Tuple of (merged MoveEncoder, mapping from old IDs to new IDs for each vocab)
+    """
+    merged_encoder = MoveEncoder()
+    id_mappings = []  # For each vocab, maps old_id -> new_id
+    
+    for vocab in move_vocabs:
+        old_to_new = {}
+        for move_uci, old_id in vocab.items():
+            # Encode in merged encoder (will assign new ID if not seen)
+            new_id = merged_encoder.encode(chess.Move.from_uci(move_uci))
+            old_to_new[old_id] = new_id
+        id_mappings.append(old_to_new)
+    
+    return merged_encoder, id_mappings
+
+
+# ============================================================
 #  PGN PARSING
 # ============================================================
 def pgn_to_samples(pgn_path: str, max_games: Optional[int] = None, 
                    min_rating: Optional[int] = None, 
-                   use_cache: bool = True, cache_dir: str = "cache") -> Tuple[List[Tuple], MoveEncoder]:
+                   use_cache: bool = True, cache_dir: str = "cache",
+                   num_parse_workers: int = 1) -> Tuple[List[Tuple], MoveEncoder]:
     """
     Parse PGN file into training samples.
     Supports both .pgn and .pgn.zst (Zstandard compressed) files.
@@ -222,6 +344,7 @@ def pgn_to_samples(pgn_path: str, max_games: Optional[int] = None,
         min_rating: Minimum player rating to include (None for all)
         use_cache: Whether to use cache (default: True)
         cache_dir: Directory to store cache files (default: "cache")
+        num_parse_workers: Number of parallel workers for parsing (1 = sequential)
     
     Returns:
         samples: List of (piece_ids, side, move_id, outcome) tuples
@@ -234,81 +357,73 @@ def pgn_to_samples(pgn_path: str, max_games: Optional[int] = None,
         if cached is not None:
             return cached
     
-    # Parse PGN file
-    samples = []
-    move_encoder = MoveEncoder()
-    
+    # Read all games first (needed for parallel processing)
+    games = []
     with open_pgn_file(pgn_path) as f:
         game_count = 0
-        pbar = tqdm(desc="Parsing PGNs")
-        
+        pbar = tqdm(desc="Reading games")
         while True:
             if max_games is not None and game_count >= max_games:
                 break
-            
             game = chess.pgn.read_game(f)
             if game is None:
                 break
-            
-            # Filter by rating if specified
-            if min_rating is not None:
-                try:
-                    white_elo = int(game.headers.get("WhiteElo", "0"))
-                    black_elo = int(game.headers.get("BlackElo", "0"))
-                    if white_elo < min_rating or black_elo < min_rating:
-                        continue
-                except ValueError:
-                    continue
-            
-            # Parse game result
-            result = game.headers.get("Result", "*")
-            if result == "1-0":
-                outcome = 1.0  # White wins
-            elif result == "0-1":
-                outcome = -1.0  # Black wins
-            elif result == "1/2-1/2":
-                outcome = 0.0  # Draw
-            else:
-                outcome = 0.0  # Unknown result
-            
-            # Extract positions and moves
-            board = game.board()
-            # Get all moves first to count them
-            mainline_moves = list(game.mainline_moves())
-            total_moves = len(mainline_moves)
-            move_count = 0
-            
-            for move in mainline_moves:
-                move_count += 1
-                piece_ids = board_to_tensor(board)
-                move_id = move_encoder.encode(move)
-                side = 0 if board.turn == chess.WHITE else 1
-                
-                # Filter value learning by game phase to improve signal quality
-                # Early game (first 20 moves): use outcome but with lower weight
-                # Mid game (moves 20-40): use outcome
-                # Endgame (last 20 moves): use outcome (most reliable)
-                # This helps value head learn better position-specific evaluations
-                game_phase = move_count / max(total_moves, 1)  # 0.0 to 1.0
-                
-                # Only use positions from mid-to-endgame for value learning
-                # Early positions get neutral value (0.0) to avoid learning wrong signals
-                if game_phase < 0.3:  # First 30% of game
-                    # Early game: use neutral value to avoid learning incorrect evaluations
-                    value_target = 0.0
-                else:
-                    # Mid-to-endgame: use actual outcome
-                    value_target = outcome
-                
-                samples.append((piece_ids, side, move_id, value_target))
-                board.push(move)
-            
+            games.append(game)
             game_count += 1
             pbar.update(1)
-        
         pbar.close()
     
-    print(f"Parsed {game_count} games, {len(samples)} positions")
+    print(f"Read {len(games)} games, parsing...")
+    
+    # Parse games (parallel or sequential)
+    if num_parse_workers > 1 and len(games) > 100:  # Only parallelize for larger datasets
+        # Split games into chunks for parallel processing
+        chunk_size = max(100, len(games) // (num_parse_workers * 2))
+        game_chunks = [games[i:i + chunk_size] for i in range(0, len(games), chunk_size)]
+        
+        # Parse chunks in parallel
+        with Pool(processes=num_parse_workers) as pool:
+            chunk_args = [(chunk, min_rating) for chunk in game_chunks]
+            results = list(tqdm(
+                pool.imap(parse_games_chunk, chunk_args),
+                total=len(game_chunks),
+                desc="Parsing games"
+            ))
+        
+        # Extract samples and vocabularies
+        all_samples = []
+        move_vocabs = []
+        for chunk_samples, chunk_vocab in results:
+            all_samples.append(chunk_samples)
+            move_vocabs.append(chunk_vocab)
+        
+        # Merge move encoders
+        move_encoder, id_mappings = merge_move_encoders(move_vocabs)
+        
+        # Remap move IDs in samples to merged encoder IDs
+        final_samples = []
+        for chunk_idx, chunk_samples in enumerate(all_samples):
+            id_mapping = id_mappings[chunk_idx]
+            for piece_ids, side, old_move_id, value_target in chunk_samples:
+                new_move_id = id_mapping[old_move_id]
+                final_samples.append((piece_ids, side, new_move_id, value_target))
+        
+        samples = final_samples
+    else:
+        # Sequential parsing (original method)
+        samples = []
+        move_encoder = MoveEncoder()
+        
+        for game in tqdm(games, desc="Parsing games"):
+            game_samples = parse_single_game(game, min_rating)
+            if game_samples is None:
+                continue
+            
+            for piece_ids, side, move_uci, value_target in game_samples:
+                move_id = move_encoder.encode(chess.Move.from_uci(move_uci))
+                samples.append((piece_ids, side, move_id, value_target))
+    
+    print(f"Parsed {len(games)} games, {len(samples)} positions")
     print(f"Move vocabulary size: {move_encoder.get_vocab_size()}")
     
     # Save to cache
@@ -362,7 +477,8 @@ def create_dataloader(pgn_path: str, batch_size: int = 32,
                      max_games: Optional[int] = None, min_rating: Optional[int] = None,
                      shuffle: bool = True, num_workers: int = 0,
                      use_cache: bool = True, cache_dir: str = "cache",
-                     return_samples: bool = False) -> Tuple[DataLoader, MoveEncoder]:
+                     return_samples: bool = False,
+                     num_parse_workers: int = 1) -> Tuple[DataLoader, MoveEncoder]:
     """
     Create a DataLoader from a PGN file.
     
@@ -379,7 +495,7 @@ def create_dataloader(pgn_path: str, batch_size: int = 32,
     Returns:
         DataLoader and MoveEncoder instance
     """
-    samples, move_encoder = pgn_to_samples(pgn_path, max_games, min_rating, use_cache, cache_dir)
+    samples, move_encoder = pgn_to_samples(pgn_path, max_games, min_rating, use_cache, cache_dir, num_parse_workers)
     dataset = ChessDataset(samples)
     loader = DataLoader(
         dataset, 
