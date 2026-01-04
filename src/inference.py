@@ -38,14 +38,27 @@ def load_model(checkpoint_path: str, device: str = None) -> Tuple[MiniChessTrans
     
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
-    # Get model config from checkpoint
-    config = checkpoint.get('config', {
+    # Get model config from checkpoint (with defaults for backward compatibility)
+    default_config = {
         'vocab_size': 14,
         'hidden_dim': 256,
         'n_layers': 6,
         'n_heads': 8,
-        'move_vocab': 4096
-    })
+        'move_vocab': 4096,
+        'use_2d_pos_encoding': False,
+        'use_patch_embeddings': False,
+        'use_gnn': False,
+        'pos_encoding_type': 'learned',
+        'patch_size': 2,
+        'conv_kernel': 3,
+        'gnn_layers': 2
+    }
+    config = checkpoint.get('config', default_config)
+    
+    # Merge with defaults to ensure all keys exist (backward compatibility)
+    for key, default_value in default_config.items():
+        if key not in config:
+            config[key] = default_value
     
     # Create model with saved config
     model = MiniChessTransformer(
@@ -53,7 +66,14 @@ def load_model(checkpoint_path: str, device: str = None) -> Tuple[MiniChessTrans
         hidden_dim=config['hidden_dim'],
         n_layers=config['n_layers'],
         n_heads=config['n_heads'],
-        move_vocab=config['move_vocab']
+        move_vocab=config['move_vocab'],
+        use_2d_pos_encoding=config.get('use_2d_pos_encoding', False),
+        use_patch_embeddings=config.get('use_patch_embeddings', False),
+        use_gnn=config.get('use_gnn', False),
+        pos_encoding_type=config.get('pos_encoding_type', 'learned'),
+        patch_size=config.get('patch_size', 2),
+        conv_kernel=config.get('conv_kernel', 3),
+        gnn_layers=config.get('gnn_layers', 2)
     )
     
     # Load weights

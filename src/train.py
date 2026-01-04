@@ -214,6 +214,23 @@ def main():
     parser.add_argument("--parse_workers", type=int, default=1,
                        help="Number of parallel workers for PGN parsing (default: 1, sequential)")
     
+    # Spatial inductive bias options
+    parser.add_argument("--use_2d_pos_encoding", action="store_true",
+                       help="Enable 2D positional encodings (rank/file coordinates)")
+    parser.add_argument("--pos_encoding_type", type=str, default="learned",
+                       choices=["learned", "sinusoidal", "2d_coords"],
+                       help="Type of positional encoding: learned, sinusoidal, or 2d_coords (default: learned)")
+    parser.add_argument("--use_patch_embeddings", action="store_true",
+                       help="Enable Vision Transformer-style patch embeddings")
+    parser.add_argument("--patch_size", type=int, default=2,
+                       help="Patch size for patch embeddings (default: 2)")
+    parser.add_argument("--conv_kernel", type=int, default=3,
+                       help="Convolution kernel size for patch embeddings (default: 3)")
+    parser.add_argument("--use_gnn", action="store_true",
+                       help="Enable Graph Neural Network for piece relationships")
+    parser.add_argument("--gnn_layers", type=int, default=2,
+                       help="Number of GNN layers (default: 2)")
+    
     args = parser.parse_args()
     
     print(f"Using device: {DEVICE}")
@@ -226,6 +243,12 @@ def main():
     print(f"  Layers: {args.n_layers}")
     print(f"  Heads: {args.n_heads}")
     print(f"  Parse workers: {args.parse_workers}")
+    if args.use_2d_pos_encoding:
+        print(f"  2D Positional Encoding: {args.pos_encoding_type}")
+    if args.use_patch_embeddings:
+        print(f"  Patch Embeddings: enabled (patch_size={args.patch_size}, kernel={args.conv_kernel})")
+    if args.use_gnn:
+        print(f"  GNN: enabled ({args.gnn_layers} layers)")
     
     # Auto-detect num_workers if not specified
     if args.num_workers is None:
@@ -299,7 +322,14 @@ def main():
         hidden_dim=args.hidden_dim,
         n_layers=args.n_layers,
         n_heads=args.n_heads,
-        move_vocab=move_vocab_size
+        move_vocab=move_vocab_size,
+        use_2d_pos_encoding=args.use_2d_pos_encoding,
+        use_patch_embeddings=args.use_patch_embeddings,
+        use_gnn=args.use_gnn,
+        pos_encoding_type=args.pos_encoding_type,
+        patch_size=args.patch_size,
+        conv_kernel=args.conv_kernel,
+        gnn_layers=args.gnn_layers
     ).to(DEVICE)
     
     # Count parameters

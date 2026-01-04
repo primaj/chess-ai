@@ -62,7 +62,13 @@ The embedding combines three components additively:
 E(square_i) = E_piece(piece_i) + E_square(i) + E_side(side_to_move)
 ```
 
-**Critical Observation**: The square embeddings are **learned** rather than using chess-specific positional encodings (e.g., rank/file coordinates). This means the model must learn spatial relationships from scratch, which may be inefficient.
+**Positional Encoding Options**:
+- **Default (learned)**: Uses learned embeddings for each of the 64 squares
+- **2D Positional Encodings** (enabled with `use_2d_pos_encoding=True`):
+  - Replaces learned square embeddings with explicit rank/file coordinate encodings
+  - Options: `'learned'` (learned rank/file embeddings), `'sinusoidal'` (sinusoidal encodings), or `'2d_coords'` (explicit coordinates)
+  - Formula: `E(square) = E_piece + E_rank(rank) + E_file(file) + E_side`
+  - Provides explicit 2D structure awareness
 
 **Output**: `[batch, 64, hidden_dim]` tensor where each square has a dense representation.
 
@@ -83,7 +89,53 @@ The transformer applies self-attention over the 64 square tokens, allowing each 
 - Attack/defense relationships
 - Long-range dependencies (e.g., rook on a-file seeing pieces on h-file)
 
-**Key Limitation**: The transformer treats the board as a **sequence of 64 tokens** with no inherent 2D structure. While attention can learn spatial relationships, it lacks explicit geometric inductive bias that would be natural for chess (e.g., knight moves, diagonals).
+**Spatial Inductive Bias Options**:
+The model now supports three approaches to add spatial awareness (all optional, can be combined):
+1. **2D Positional Encodings**: See `SquareEmbedding` above
+2. **Patch Embeddings**: Vision Transformer-style convolutional processing (see below)
+3. **Graph Neural Network**: Explicit piece relationship modeling (see below)
+
+#### 2a. PatchEmbedding (`src/model.py:157-234`) - Optional
+
+**Purpose**: Adds Vision Transformer-style spatial processing using 2D convolutions.
+
+**Architecture**:
+- Reshapes board from `[batch, 64, hidden_dim]` to `[batch, 8, 8, hidden_dim]`
+- Applies 2D convolutions with configurable kernel size (default: 3x3)
+- Three-layer conv network: `1 → hidden_dim//4 → hidden_dim//2 → hidden_dim`
+- Uses residual connection: `output = input + conv(input)`
+
+**Benefits**:
+- Captures local spatial patterns (knight moves, diagonals, adjacent squares)
+- Explicit 2D convolution operations
+- Natural for chess geometry
+
+**Configuration**: Enable with `--use_patch_embeddings` flag. Options: `--patch_size`, `--conv_kernel`
+
+#### 2b. ChessGNN (`src/model.py:236-310`) - Optional
+
+**Purpose**: Models board as graph where nodes are squares and edges represent spatial relationships.
+
+**Graph Construction**:
+- Nodes: 64 squares
+- Edges connect squares that are:
+  - On same rank (row)
+  - On same file (column)
+  - On same diagonal
+  - Within knight move distance
+- Normalized adjacency matrix for message passing
+
+**Architecture**:
+- Multiple GNN layers (configurable, default: 2)
+- Each layer: message passing → linear transformation → GELU → LayerNorm
+- Residual connections between layers
+
+**Benefits**:
+- Explicitly models piece relationships (ranks, files, diagonals, knight moves)
+- Natural for chess (pieces interact through spatial relationships)
+- Can capture long-range dependencies through graph edges
+
+**Configuration**: Enable with `--use_gnn` flag. Options: `--gnn_layers`
 
 #### 3. PolicyHead (`src/model.py:89-109`)
 
@@ -118,6 +170,97 @@ The transformer applies self-attention over the 64 square tokens, allowing each 
   - -1 = Black wins
 
 **Output**: `[batch, 1]` scalar value
+
+---
+
+## Spatial Inductive Bias Features
+
+The model now supports three complementary approaches to add spatial awareness, addressing the limitation that transformers treat the board as a flat sequence. All features are optional and can be combined.
+
+### 1. 2D Positional Encodings
+
+**Implementation**: `SquareEmbedding` class supports rank/file coordinate encodings.
+
+**Usage**: Enable with `--use_2d_pos_encoding` and choose encoding type:
+- `--pos_encoding_type learned`: Learned embeddings for rank (0-7) and file (0-7)
+- `--pos_encoding_type sinusoidal`: Sinusoidal positional encodings for rank/file
+- `--pos_encoding_type 2d_coords`: Explicit coordinate embeddings
+
+**Benefits**:
+- Explicit encoding of 2D structure (ranks and files)
+- Model immediately understands rank/file relationships
+- Minimal architecture change
+- Backward compatible (default: learned square embeddings)
+
+**Example**:
+```bash
+python src/train.py --pgn_file data/games.pgn --use_2d_pos_encoding --pos_encoding_type learned
+```
+
+### 2. Vision Transformer-Style Patch Embeddings
+
+**Implementation**: `PatchEmbedding` class applies 2D convolutions to capture local spatial patterns.
+
+**Usage**: Enable with `--use_patch_embeddings`
+- `--patch_size`: Patch size (default: 2, not used with conv)
+- `--conv_kernel`: Convolution kernel size (default: 3)
+
+**Architecture**:
+- Reshapes board to 8x8 spatial layout
+- Applies 3-layer 2D convolution network
+- Uses residual connection to combine with original embeddings
+
+**Benefits**:
+- Explicit 2D convolution operations capture local patterns
+- Natural for capturing knight moves, diagonals, adjacent squares
+- Can be combined with other approaches
+
+**Example**:
+```bash
+python src/train.py --pgn_file data/games.pgn --use_patch_embeddings --conv_kernel 3
+```
+
+### 3. Graph Neural Network
+
+**Implementation**: `ChessGNN` class models board as graph with spatial relationships.
+
+**Usage**: Enable with `--use_gnn`
+- `--gnn_layers`: Number of GNN layers (default: 2)
+
+**Graph Structure**:
+- Nodes: 64 squares
+- Edges: Connect squares on same rank, file, diagonal, or knight move distance
+- Normalized adjacency matrix for message passing
+
+**Benefits**:
+- Explicitly models piece relationships (ranks, files, diagonals, knight moves)
+- Natural for chess (pieces interact through spatial relationships)
+- Can capture long-range dependencies through graph edges
+
+**Example**:
+```bash
+python src/train.py --pgn_file data/games.pgn --use_gnn --gnn_layers 2
+```
+
+### Combining Approaches
+
+All three approaches can be combined for maximum spatial awareness:
+
+```bash
+python src/train.py --pgn_file data/games.pgn \
+    --use_2d_pos_encoding --pos_encoding_type learned \
+    --use_patch_embeddings --conv_kernel 3 \
+    --use_gnn --gnn_layers 2
+```
+
+**Processing Order**:
+1. Initial embedding with optional 2D positional encodings
+2. Optional patch embeddings (convolutional processing)
+3. Optional GNN processing (graph message passing)
+4. Transformer backbone (global attention)
+5. Policy and value heads
+
+**Backward Compatibility**: All features are disabled by default. Existing checkpoints load correctly with default settings.
 
 ---
 
@@ -404,10 +547,12 @@ However, without explicit 2D structure, the model must learn these relationships
 
 4. **Inference Broken**: `predict_move_from_legal()` doesn't actually use model predictions
 
-5. **No Spatial Inductive Bias**: 
-   - Treats board as flat sequence
-   - Must learn 2D relationships from scratch
-   - Less efficient than architectures with spatial awareness
+5. ✅ **No Spatial Inductive Bias**: ✅ **ADDRESSED** - Three approaches now available:
+   - ✅ 2D positional encodings (rank/file coordinates)
+   - ✅ Vision Transformer-style patch embeddings
+   - ✅ Graph neural network for piece relationships
+   - All are optional and can be combined
+   - See "Spatial Inductive Bias Features" section for details
 
 6. **No Move Legality Checking**: 
    - Model outputs distribution over all moves (including illegal)
@@ -512,10 +657,12 @@ However, without explicit 2D structure, the model must learn these relationships
 
 ### Medium Priority
 
-6. **Spatial Inductive Bias**: 
-   - Add 2D positional encodings (rank/file coordinates)
-   - Or use Vision Transformer-style patch embeddings
-   - Or use graph neural network for piece relationships
+6. ✅ **Spatial Inductive Bias**: ✅ **COMPLETED** - Three approaches implemented:
+   - ✅ 2D positional encodings (rank/file coordinates) - `--use_2d_pos_encoding`
+   - ✅ Vision Transformer-style patch embeddings - `--use_patch_embeddings`
+   - ✅ Graph neural network for piece relationships - `--use_gnn`
+   - All approaches are configurable and can be combined
+   - See "Spatial Inductive Bias Features" section below for details
 
 7. **Data Augmentation**: 
    - Board rotations/flips
