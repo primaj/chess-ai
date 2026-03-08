@@ -31,7 +31,7 @@ The model consists of:
 - **Python 3.10+** (required for `gradio-chessboard`)
 - pip package manager
 
-**Note:** If you're using Python 3.9 or earlier, see [UPGRADE_PYTHON.md](UPGRADE_PYTHON.md) for upgrade instructions.
+**Note:** If you're using Python 3.9 or earlier, see [upgrade-python.md](docs/upgrade-python.md) for upgrade instructions.
 
 ### Setup Steps
 
@@ -85,7 +85,7 @@ This opens a web interface at `http://127.0.0.1:7860` where you can:
 
 **Option 1: Jupyter Notebook (Recommended for interactive use)**
 
-Open `train_notebook.ipynb` in Jupyter/VS Code and run the cells. The notebook will:
+Open `notebooks/train_notebook.ipynb` in Jupyter/VS Code and run the cells. The notebook will:
 - Download a Lichess PGN dataset
 - Configure training parameters
 - Train the model
@@ -183,19 +183,30 @@ Place PGN files in the `data/` directory before training.
 
 ```
 chess-ai/
-├── src/
-│   ├── model.py              # MiniChessTransformer architecture
-│   ├── data.py               # PGN parsing and dataset utilities
-│   ├── train.py              # Training script
-│   ├── inference.py          # Inference/evaluation utilities
-│   ├── download.py           # Lichess database download utility
-│   └── ui.py                 # Interactive web UI (Gradio)
-├── data/                     # PGN files directory
-├── models/                   # Saved model checkpoints
-├── cache/                    # Cached parsed PGN data (auto-generated)
-├── requirements.txt          # Python dependencies
-├── train_notebook.ipynb      # Jupyter notebook for training
-└── README.md                # This file
+├── src/                        # Main Python package
+│   ├── model.py                #   MiniChessTransformer architecture
+│   ├── data.py                 #   PGN parsing and dataset utilities
+│   ├── train.py                #   Training script
+│   ├── inference.py            #   Inference/evaluation utilities
+│   ├── download.py             #   Lichess database download utility
+│   └── ui.py                   #   Interactive web UI (Gradio)
+├── scripts/                    # Standalone CLI scripts and utilities
+│   ├── run_parse.py            #   Download and parse a Lichess dataset
+│   └── parallel_download.py    #   Parallel chunk downloader
+├── tests/                      # Test files
+│   └── test_cache.py           #   Cache loading and DataLoader smoke test
+├── notebooks/                  # Jupyter notebooks
+│   └── train_notebook.ipynb    #   Interactive training workflow
+├── docs/                       # Project documentation
+│   ├── technical.md            #   Architecture and implementation details
+│   ├── upgrade-python.md       #   Python 3.10 upgrade guide
+│   └── briefs/                 #   Chat notes, task briefs, design docs
+├── data/                       # PGN files directory (gitignored)
+├── models/                     # Saved model checkpoints (gitignored)
+├── cache/                      # Cached parsed PGN data (gitignored)
+├── requirements.txt            # Python dependencies
+├── CHANGELOG.md                # Version history
+└── README.md                   # This file
 ```
 
 ## Training Details

@@ -72,7 +72,7 @@ Key Conventions:
 
 Documentation and Version Control:
 - **ALWAYS** update documentation when making code changes:
-  - Update TECHNICAL_DOCUMENTATION.md with any architectural or implementation changes
+  - Update docs/technical.md with any architectural or implementation changes
   - Update CHANGELOG.md with all changes (Added, Changed, Fixed, Removed)
   - Update README.md if user-facing features or usage changes
 - **ALWAYS** create a new git branch for changes:

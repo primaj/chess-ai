@@ -1,0 +1,54 @@
+---
+description: Project structure, file placement, and naming conventions for the chess-ai repository.
+alwaysApply: true
+---
+
+# Project Structure
+
+```
+chess-ai/
+  src/          # Main Python package (model, data, training, inference, UI)
+  scripts/      # Standalone CLI scripts and utilities
+  tests/        # Test files (unit, integration, smoke tests)
+  notebooks/    # Jupyter notebooks (training workflows, experiments)
+  docs/         # Project documentation
+    briefs/     # AI chat notes, task briefs, design documents
+  data/         # Raw data files (PGN, etc.) - gitignored
+  cache/        # Cached/processed data - gitignored
+  models/       # Saved model checkpoints - gitignored
+```
+
+# File Placement Rules
+
+- **Source code** (`*.py` modules imported by other code) belongs in `src/`.
+- **Runnable scripts** (CLI entry points, one-off utilities) belong in `scripts/`.
+- **Tests** belong in `tests/`. Prefix filenames with `test_`.
+- **Notebooks** belong in `notebooks/`.
+- **Never place loose Python files in the project root.** Only config files (`requirements.txt`, `setup.sh`, `.gitignore`, `.python-version`) and standard docs (`README.md`, `CHANGELOG.md`) belong at root.
+
+# Documentation Placement
+
+- `README.md` and `CHANGELOG.md` stay at the project root.
+- Technical documentation, guides, and reference docs go in `docs/`.
+- **Chat notes, task briefs, design documents, and AI-generated specs must go in `docs/briefs/`.** Never leave these at the project root.
+
+# Naming Conventions
+
+- **Python files**: `snake_case.py` (e.g. `run_parse.py`, `test_cache.py`)
+- **Documentation files**: `kebab-case.md` (e.g. `upgrade-python.md`, `parse-fix-brief.md`)
+- **Directories**: lowercase, no hyphens (e.g. `scripts`, `docs`, `briefs`)
+
+# Import Conventions
+
+- Scripts in `scripts/` and `tests/` should add the project root to `sys.path` then import via `from src.<module> import ...`.
+- Pattern: `sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))`.
+- Notebooks should use `os.chdir(PROJECT_ROOT)` after path setup so relative data/cache paths resolve correctly.
+
+# Running Scripts
+
+All scripts should be run from the **project root**:
+
+```bash
+python scripts/run_parse.py
+python tests/test_cache.py
+```
