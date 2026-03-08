@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Direct Cache Loading**: New `--cache_file` argument loads a pre-built `.cache` file directly, bypassing PGN path and hash computation. `--pgn_file` is no longer required when `--cache_file` is provided.
+- **bf16 Mixed Precision**: Training and validation now run under `torch.amp.autocast` with bfloat16 by default on CUDA. Disable with `--no_amp`. No `GradScaler` needed (bf16 shares fp32's exponent range).
+- **LR Scheduler**: Cosine annealing with linear warmup. Configurable via `--warmup_steps` (default: 1000). Steps per optimizer update, not per batch.
+- **Gradient Accumulation**: New `--grad_accum_steps` argument (default: 1). Enables larger effective batch sizes without extra VRAM.
+- **`TensorBatchLoader`**: Custom batch loader in `src/data.py` that replaces `DataLoader` for in-memory tensor datasets. Does batch-level tensor indexing (one op per field) instead of per-sample `__getitem__` calls, eliminating collation and per-sample type conversion overhead. Train/val splits share the same underlying tensors via separate index arrays.
+- **`CUDAPrefetcher`**: Wraps any batch iterator and transfers the next batch to GPU on a separate CUDA stream while the current batch is being computed, hiding CPU-to-GPU transfer latency.
+- **DistributedDataParallel support**: Launch with `torchrun --nproc_per_node=N src/train.py` for DDP multi-GPU training. Falls back to DataParallel when not launched via torchrun.
+- **`--compile` flag**: Enables `torch.compile` for kernel fusion (requires PyTorch 2.0+).
+
+### Changed
+- **Default batch size**: Increased from 64 to 2048 (tuned for multi-GPU setups with ample VRAM).
+- **Default learning rate**: Increased from 1e-4 to 3e-4 (better for larger batch sizes).
+- **`--pgn_file`**: No longer required; either `--pgn_file` or `--cache_file` must be provided.
+- **Data loading**: Replaced `DataLoader` + `random_split` with `TensorBatchLoader` + direct index splitting. Eliminates per-sample Python overhead and the Windows `spawn` memory duplication issue with multi-worker DataLoader.
+- **Compact tensor dtypes**: `_tensorise` now stores piece_ids as int8 and moves as int32 (matching the parallel parsing path), reducing in-memory tensor footprint by 5-8x. The `.long()` upcast happens per-batch in `TensorBatchLoader`.
+- **Cached coordinate buffers**: `SquareEmbedding` now registers rank/file coordinate tensors as buffers (computed once at init) instead of rebuilding them on every forward pass.
+- **GNN adjacency matrix**: `ChessGNN` now computes and registers the normalised adjacency matrix as a buffer in `__init__`, replacing the fragile `hasattr`-based cache that did not survive `model.to(device)` or serialisation.
+- **`--no_multi_gpu`**: Now disables all multi-GPU parallelism (DataParallel and DDP).
+
+### Removed
+- **`--num_workers` CLI arg**: DataLoader workers are no longer used (in-memory tensor datasets don't benefit from multi-worker loading, and on Windows `spawn` clones the entire dataset to each worker).
+- **`--prefetch_factor` CLI arg**: No longer applicable without DataLoader workers.
+
+## [0.4.0] - 2026-03-07
+
+### Changed
+- **Contiguous Tensor Storage**: All training data is now stored as 4 contiguous tensors instead of a list of individual Python tuples. Eliminates millions of per-sample object allocations and reduces memory overhead by ~5-10x.
+- **Numpy Board Encoding**: New `board_to_array()` uses `piece_map()` to iterate only occupied squares (~16-32) instead of all 64, and returns a numpy array instead of allocating a torch.Tensor per position.
+- **Simplified Parallel Parsing**: Worker processes now return raw samples (numpy + UCI strings) without per-worker move vocabularies. Eliminates the merge/remap step entirely.
+- **Sequential Parsing Path**: Single-pass through the PGN file (read + parse in one go) instead of storing both PGN strings and game objects in memory.
+- **Cache Format v2**: Stores contiguous numpy arrays via pickle protocol 5 (out-of-band large buffer serialisation). Old v1 caches are automatically bypassed.
+- **Dataset**: `ChessDataset` is now backed by contiguous tensors — `__getitem__` is a zero-allocation tensor index.
+- **Default batch size**: Increased from 32 to 64.
+- **DataLoader workers**: Auto-detect ceiling raised from 8 to 12.
+
+### Added
+- **`board_to_array()`**: Fast numpy-based board encoding for training (original `board_to_tensor()` retained for inference).
+- **`MoveEncoder.encode_uci()`**: Encode UCI strings directly without constructing chess.Move objects.
+- **`get_optimal_workers()`**: Exported utility for auto-detecting DataLoader worker count.
+- **`--prefetch_factor` CLI arg**: Control how many batches each DataLoader worker prefetches (default: 4).
+- **`non_blocking=True`**: All `.to(device)` calls in training and validation loops now use asynchronous CPU→GPU transfer.
+- **`optimizer.zero_grad(set_to_none=True)`**: Faster gradient clearing (sets to None instead of filling with zeros).
+- **`drop_last=True`**: Training DataLoader drops the final incomplete batch for consistent batch sizes.
+- **`pin_memory=True`**: Enabled by default when CUDA is available.
+- **`persistent_workers=True`**: Enabled by default when `num_workers > 0`.
+- **`prefetch_factor=4`**: Each DataLoader worker prefetches 4 batches ahead to keep GPUs fed.
+
+### Performance
+- **Memory**: ~5-10x reduction in Python object overhead for training data storage
+- **Parsing**: Faster board encoding via numpy + piece_map(); no double-storage of games
+- **Data Loading**: Zero-allocation `__getitem__`, pin_memory, prefetching, and non_blocking transfers
+- **GPU Utilisation**: Async transfers + prefetching minimise GPU idle time on multi-GPU setups
+
 ## [0.3.0] - 2024-11-15
 
 ### Added

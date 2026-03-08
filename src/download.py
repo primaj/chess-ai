@@ -94,7 +94,7 @@ def download_file(url: str, output_path: str, resume: bool = True) -> bool:
                 unit_divisor=1024,
                 desc=os.path.basename(output_path)
             ) as pbar:
-                for chunk in response.iter_content(chunk_size=8192):
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
                     if chunk:
                         f.write(chunk)
                         pbar.update(len(chunk))

@@ -79,14 +79,16 @@ class SquareEmbedding(nn.Module):
         self.side_embed = nn.Embedding(2, hidden_dim)  # white / black
         
         if use_2d_pos_encoding:
+            coords = get_square_coords_tensor(torch.device('cpu'))
+            self.register_buffer('_square_ranks', coords[:, 0])
+            self.register_buffer('_square_files', coords[:, 1])
+
             if pos_encoding_type == '2d_coords':
-                # Separate embeddings for rank and file
                 rank_dim = hidden_dim // 2
                 file_dim = hidden_dim - rank_dim
                 self.rank_embed = nn.Embedding(8, rank_dim)
                 self.file_embed = nn.Embedding(8, file_dim)
             elif pos_encoding_type == 'sinusoidal':
-                # Sinusoidal positional encodings for rank and file
                 self.register_buffer('rank_pe', self._create_sinusoidal_pe(8, hidden_dim // 2))
                 self.register_buffer('file_pe', self._create_sinusoidal_pe(8, hidden_dim - hidden_dim // 2))
             else:  # learned 2D
@@ -124,10 +126,8 @@ class SquareEmbedding(nn.Module):
         
         # Add positional embeddings
         if self.use_2d_pos_encoding:
-            # Get rank/file coordinates for all squares
-            coords = get_square_coords_tensor(device)  # [64, 2]
-            ranks = coords[:, 0]  # [64]
-            files = coords[:, 1]  # [64]
+            ranks = self._square_ranks   # [64] — pre-computed buffer
+            files = self._square_files   # [64]
             
             if self.pos_encoding_type == 'sinusoidal':
                 rank_pe = self.rank_pe[ranks]  # [64, rank_dim]
@@ -249,8 +249,6 @@ class ChessGNN(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         
-        # Simple GNN using message passing
-        # We'll use a simplified approach without torch_geometric dependency
         self.gnn_layers = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
@@ -258,46 +256,42 @@ class ChessGNN(nn.Module):
                 nn.LayerNorm(hidden_dim)
             ) for _ in range(num_layers)
         ])
+
+        self.register_buffer('adj', self._build_adjacency_matrix())
     
-    def _build_adjacency_matrix(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        """
-        Build adjacency matrix for chess board graph.
-        Connects squares that are:
-        - On same rank (row)
-        - On same file (column)
-        - On same diagonal
-        - Within knight move distance
-        
+    @staticmethod
+    def _build_adjacency_matrix() -> torch.Tensor:
+        """Build normalised adjacency matrix for the chess board graph.
+
+        Connects squares on the same rank, file, diagonal, or within
+        knight-move distance.  Includes self-connections and row-normalisation.
+
         Returns:
-            [64, 64] adjacency matrix
+            [1, 64, 64] tensor (leading dim for batch broadcasting)
         """
-        adj = torch.zeros(64, 64, device=device)
+        adj = torch.zeros(64, 64)
         
         for i in range(64):
             rank_i, file_i = square_to_coords(i)
             for j in range(64):
                 rank_j, file_j = square_to_coords(j)
                 
-                # Same rank or file
                 if rank_i == rank_j or file_i == file_j:
                     adj[i, j] = 1.0
                 
-                # Same diagonal
                 if abs(rank_i - rank_j) == abs(file_i - file_j):
                     adj[i, j] = 1.0
                 
-                # Knight move distance
                 rank_diff = abs(rank_i - rank_j)
                 file_diff = abs(file_i - file_j)
                 if (rank_diff == 2 and file_diff == 1) or (rank_diff == 1 and file_diff == 2):
                     adj[i, j] = 1.0
         
-        # Normalize
-        adj = adj + torch.eye(64, device=device)  # Self-connections
+        adj = adj + torch.eye(64)
         degree = adj.sum(dim=1, keepdim=True)
         adj = adj / (degree + 1e-8)
         
-        return adj.unsqueeze(0)  # [1, 64, 64] for broadcasting
+        return adj.unsqueeze(0)
     
     def forward(self, x):
         """
@@ -308,21 +302,10 @@ class ChessGNN(nn.Module):
             [batch, 64, hidden_dim] processed board representation
         """
         batch_size = x.shape[0]
-        device = x.device
         
-        # Build adjacency matrix (cached or computed)
-        if not hasattr(self, '_cached_adj') or self._cached_adj.device != device:
-            self._cached_adj = self._build_adjacency_matrix(batch_size, device)
-        
-        adj = self._cached_adj  # [1, 64, 64]
-        
-        # Graph convolution: x' = A * x * W
         for layer in self.gnn_layers:
-            # Message passing: aggregate from neighbors
-            x_neighbors = torch.bmm(adj.expand(batch_size, -1, -1), x)  # [batch, 64, hidden_dim]
-            # Transform
+            x_neighbors = torch.bmm(self.adj.expand(batch_size, -1, -1), x)
             x = layer(x_neighbors)
-            # Residual connection
             x = x + x_neighbors
         
         return x
