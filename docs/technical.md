@@ -266,7 +266,7 @@ python src/train.py --pgn_file data/games.pgn \
 
 ## Data Processing Pipeline
 
-### PGN Parsing (`src/data.py:211-297`)
+### PGN Parsing (`src/data.py`)
 
 **Input**: PGN (Portable Game Notation) files, optionally compressed with Zstandard (.zst)
 
@@ -276,45 +276,54 @@ python src/train.py --pgn_file data/games.pgn \
    - Zstandard files are decompressed on-the-fly
    - Uses context managers for proper resource cleanup
 
-2. **Game Parsing**: Iterates through games using `chess.pgn.read_game()`
-   - Filters by `max_games` and `min_rating` if specified
-   - Extracts game result from headers
+2. **Game Parsing**: Two parsing modes depending on `num_parse_workers`:
+   - **Sequential** (`_parse_sequential`): Single-pass — reads and parses from the PGN file in one go. No intermediate PGN string storage.
+   - **Parallel** (`_parse_parallel`): Two-phase — reads all games as PGN strings first, then distributes chunks to worker processes via `multiprocessing.Pool`. Workers return raw samples (numpy arrays + UCI strings) without move encoding, eliminating the need for per-worker vocabularies and the old merge/remap step.
 
 3. **Position Extraction**: For each game:
    - Starts with initial board position
    - For each move in the game:
-     - Converts current board to tensor (`board_to_tensor()`)
-     - Encodes the move played (`MoveEncoder.encode()`)
-     - Records side to move (0 = white, 1 = black)
-     - Records game outcome (1.0 = white wins, -1.0 = black wins, 0.0 = draw)
+     - Converts current board to numpy int8 array via `board_to_array()` (uses `piece_map()` to iterate only occupied squares)
+     - Records move as UCI string (move encoding is deferred)
+     - Records side to move (0 = white, 1 = black) as numpy int8
+     - Records game outcome as numpy float32 (with game-phase filtering)
      - Pushes move to board for next position
 
-4. **Sample Format**: Each training sample is a tuple:
+4. **Tensorisation** (`_tensorise`): After all parsing is complete, raw samples are converted into 4 contiguous tensors in a single pass:
    ```python
-   (piece_ids: torch.Tensor[64], side: int, move_id: int, outcome: float)
+   piece_ids: torch.Tensor[N, 64]  # int64 — ready for embedding lookup
+   sides:     torch.Tensor[N]      # int64
+   moves:     torch.Tensor[N]      # int64 — encoded via MoveEncoder
+   values:    torch.Tensor[N]      # float32
    ```
+   This replaces the old list-of-tuples format which created millions of individual Python objects and separate tensor allocations.
+
+5. **Return Format**: `pgn_to_samples()` returns `(tensor_dict, MoveEncoder)` where `tensor_dict` is a dict of the 4 contiguous tensors above.
 
 **Critical Observation**: The outcome is **the same for all positions in a game**. This means:
-- Early game positions get the same label as endgame positions
+- Early game positions get the same label as endgame positions (mitigated by game-phase filtering which sets early positions to 0.0)
 - A position from a game where White eventually won is always labeled +1.0, even if it's a losing position
 - This is a **major limitation** - the value target is not position-specific
 
-### Board Encoding (`src/data.py:74-88`)
+### Board Encoding (`src/data.py`)
 
-**Process**:
-1. Creates a `[64]` tensor of zeros
-2. Iterates through all 64 squares (in chess.SQUARES order: a1, a2, ..., h8)
-3. Maps each piece to an integer ID:
-   - Empty square → 0
-   - White pieces → 1-6 (P, N, B, R, Q, K)
-   - Black pieces → 7-12 (P, N, B, R, Q, K)
+Two encoding functions are provided:
+
+- **`board_to_array()`** (training): Returns a numpy int8 array. Uses `board.piece_map()` to iterate only occupied squares (~16-32) rather than all 64. Much faster for bulk parsing and avoids per-sample `torch.Tensor` allocation overhead.
+- **`board_to_tensor()`** (inference): Returns a `torch.Tensor[64]`. Retained for inference compatibility where single-position overhead is negligible.
+
+**Piece Mapping**:
+- Empty square → 0
+- White pieces → 1-6 (P, N, B, R, Q, K)
+- Black pieces → 7-12 (P, N, B, R, Q, K)
 
 **Square Ordering**: Uses `chess.SQUARES` which is a flat list. The model must learn that squares are arranged in an 8x8 grid through attention, as there's no explicit 2D structure.
 
-### Move Encoding (`src/data.py:45-68`)
+### Move Encoding (`src/data.py`)
 
 **Dynamic Vocabulary Building**:
-- `MoveEncoder` builds vocabulary on-the-fly during parsing
+- `MoveEncoder` builds vocabulary on-the-fly during the tensorisation step
+- `encode_uci()` encodes UCI strings directly without constructing `chess.Move` objects
 - Each unique UCI move string gets assigned a sequential integer ID
 - Vocabulary size depends on training data (typically 1000-4000 moves)
 
@@ -323,17 +332,36 @@ python src/train.py --pgn_file data/games.pgn \
 2. **No Standard Mapping**: Move IDs don't correspond to any canonical ordering
 3. **Inference Limitation**: Requires the same `MoveEncoder` instance used during training to decode predictions
 
-### Caching (`src/data.py:132-205`)
+### Caching (`src/data.py`)
 
 **Purpose**: Avoid re-parsing PGN files on subsequent training runs.
 
 **Implementation**:
-- Cache key includes: PGN file path, `max_games`, `min_rating`
+- Cache key includes: cache version (`v2`), PGN file path, `max_games`, `min_rating`
 - Uses MD5 hash of cache key for filename
-- Stores: samples list and `MoveEncoder` state (pickled)
+- Stores: 4 numpy arrays (converted from contiguous tensors) and `MoveEncoder` state
+- Uses pickle protocol 5 for efficient out-of-band serialisation of large arrays
 - Cache files saved in `cache/` directory
+- Old v1 caches are automatically bypassed (different hash due to version prefix)
 
 **Benefits**: Significantly speeds up subsequent training runs (parsing can take hours for large files).
+
+### Dataset and Batch Loading (`src/data.py`)
+
+**`ChessDataset`**: Backed by contiguous tensors. `__getitem__` is a single tensor index operation (returns a view, no allocation). Retained for backward compatibility but no longer used directly by the training loop.
+
+**`TensorBatchLoader`**: Custom iterable that replaces PyTorch's `DataLoader` for in-memory tensor datasets. Standard `DataLoader` calls `__getitem__` once per sample then collates — with batch_size=2048 that's 2048 Python dict creations, 6144 `.long()` type conversions, and a `torch.stack` per field per batch. `TensorBatchLoader` instead does a single `tensor[batch_indices]` per field, making batch preparation orders of magnitude faster.
+
+- Train/val splits share the same underlying tensors via separate index arrays (no data duplication)
+- Shuffle via `torch.randperm` on the index array each epoch
+- `pin_memory=True` when CUDA is available (enables async CPU→GPU transfer)
+- `drop_last=True` for training (avoids small final batches)
+- `non_blocking=True` on all `.to(device)` calls in training/validation loops
+- Compact storage dtypes (int8 for piece_ids/sides, int32 for moves) with per-batch `.long()` upcast — reduces tensor memory by 5-8x
+
+**`CUDAPrefetcher`**: Wraps `TensorBatchLoader` (or any batch iterator) and overlaps CPU→GPU transfer with GPU compute. A separate CUDA stream transfers the next batch while the current batch is being processed on the default stream. Combined with `pin_memory=True`, the transfer is a true async DMA copy, hiding transfer latency almost entirely.
+
+**Why not DataLoader workers?** On Windows, `multiprocessing` uses `spawn` which pickles the entire `Dataset` to each worker process. With 318M positions (~23 GB), 12 workers would require 276 GB — exceeding the 128 GB system RAM. Since the data is already in memory as contiguous tensors, there is no disk I/O to parallelise, so workers provide zero benefit. See `docs/briefs/dataloader-bottleneck-brief.md` for full analysis.
 
 ---
 
@@ -360,23 +388,38 @@ The model uses a **multi-task learning** approach with two loss components:
 
 The 0.5 weighting on value loss is arbitrary and not tuned. This suggests value learning may be under-emphasized.
 
-### Training Loop (`src/train.py:80-136`)
+### Training Loop (`src/train.py`)
 
 **Process**:
 1. For each epoch:
-   - Iterate through batches
+   - Iterate through batches under optional bf16 autocast (`torch.amp.autocast`)
    - Forward pass: `policy_logits, value_pred = model(piece_ids, side)`
    - Compute losses
-   - Backward pass with gradient clipping (max_norm=1.0)
-   - Update parameters via AdamW optimizer
+   - Scale loss by `1 / grad_accum_steps` and call backward
+   - Every `grad_accum_steps` batches: clip gradients, step optimizer, step LR scheduler, zero gradients
 
 2. **Checkpointing**:
    - Saves checkpoint after each epoch (includes model state, optimizer state, config, and move encoder)
    - Saves "best" model if validation loss improves (validation is now enabled with proper train/val split)
 
-**Optimizer**: AdamW with learning rate 1e-4, weight decay 1e-5
+**Optimizer**: AdamW with learning rate 3e-4, weight decay 1e-5
 
 **Gradient Clipping**: Applied with max_norm=1.0 to prevent exploding gradients
+
+**Mixed Precision**: bf16 autocast enabled by default on CUDA (disable with `--no_amp`). bf16 is preferred over fp16 as it shares fp32's exponent range, eliminating the need for `GradScaler`.
+
+**LR Schedule**: Linear warmup (default 1000 steps) followed by cosine decay to zero over the remaining training steps. Scheduler steps per optimizer update.
+
+**Gradient Accumulation**: Configurable via `--grad_accum_steps` (default: 1). Effective batch size equals `batch_size * grad_accum_steps`.
+
+**Direct Cache Loading**: The `--cache_file` argument loads a pre-built `.cache` file directly, bypassing PGN parsing and cache-key computation. Useful when the original PGN file is no longer on disk.
+
+**Multi-GPU**: Two strategies available:
+- **DistributedDataParallel (preferred)**: Launch with `torchrun --nproc_per_node=N src/train.py`. Each rank trains on a non-overlapping shard of the data. Gradient allreduce overlaps with backward pass. A fixed seed ensures all ranks agree on the train/val split.
+- **DataParallel (fallback)**: Used automatically when multiple GPUs are detected and the script is not launched via torchrun. Works in a single process but has GIL contention and scatter/gather overhead.
+- Disable both with `--no_multi_gpu`.
+
+**`torch.compile`**: Opt-in via `--compile`. Fuses kernels, eliminates Python overhead in the forward/backward pass, and reduces memory traffic. Particularly effective for transformer models. Requires PyTorch 2.0+.
 
 ### Training Improvements (Implemented)
 
@@ -568,9 +611,7 @@ However, without explicit 2D structure, the model must learn these relationships
    - Missing opportunity to double training data
    - No board symmetries exploited
 
-9. **Batch Size**: 
-   - Default 32 is conservative
-   - Could likely increase for better GPU utilization
+9. ✅ **Batch Size**: ✅ **IMPROVED** - Default increased to 2048, tuned for multi-GPU setups with large VRAM
 
 10. **Loss Weighting**: 
     - 0.5 weight on value loss is arbitrary
@@ -580,13 +621,13 @@ However, without explicit 2D structure, the model must learn these relationships
 
 ## Potential Issues
 
-### 1. Memory Issues with Large Datasets
+### 1. Memory Usage with Large Datasets
 
-**Problem**: Loading all samples into memory (`samples` list) can cause OOM errors with large PGN files.
+**Status**: ✅ **IMPROVED** — Data is stored as contiguous tensors with compact dtypes (int8 for piece_ids/sides, int32 for moves, float32 for values). For 318M positions this is ~22 GiB vs ~157 GiB with the old int64 layout. Training uses `TensorBatchLoader` which shares the same underlying tensors between train/val splits via index arrays, avoiding data duplication.
 
-**Current Behavior**: `pgn_to_samples()` loads all samples into a Python list before creating the dataset. For 500k positions, this could be several GB of RAM.
+**Windows-specific concern**: PyTorch's `DataLoader` with `num_workers > 0` uses `spawn` multiprocessing on Windows, which pickles the entire dataset to each worker. With 318M positions (~23 GB) and 12 workers, this required 276 GB — exceeding 128 GB RAM. `TensorBatchLoader` avoids this entirely by running in the main process with batch-level tensor indexing. See `docs/briefs/dataloader-bottleneck-brief.md` for details.
 
-**Solution**: Use streaming dataset that reads from PGN on-the-fly, or use memory-mapped arrays.
+**Remaining Consideration**: All data is still held in RAM. With 128 GB and compact dtypes this supports ~500M+ positions comfortably, but for truly enormous corpora a streaming or memory-mapped approach may be needed. Under DDP, each rank loads the full dataset independently (data sharing between processes would require shared memory tensors).
 
 ### 2. Move Vocabulary Explosion
 
@@ -633,9 +674,7 @@ However, without explicit 2D structure, the model must learn these relationships
 
 ### 7. No Gradient Accumulation
 
-**Problem**: With small batch sizes, gradient updates may be noisy.
-
-**Solution**: Implement gradient accumulation for effective larger batch sizes.
+**Status**: ✅ **FIXED** - Gradient accumulation implemented via `--grad_accum_steps`. Loss is scaled by `1 / grad_accum_steps` and optimizer steps every N batches. Effective batch size = `batch_size * grad_accum_steps`.
 
 ### 8. MPS Compatibility
 
@@ -685,12 +724,12 @@ However, without explicit 2D structure, the model must learn these relationships
 
 ### Low Priority
 
-11. **Mixed Precision Training**: Use FP16/BF16 for faster training
-12. **Gradient Accumulation**: For effective larger batch sizes
-13. **Learning Rate Scheduling**: Cosine annealing or warmup
+11. ✅ **Mixed Precision Training**: ✅ **COMPLETED** - bf16 autocast enabled by default on CUDA (`--no_amp` to disable)
+12. ✅ **Gradient Accumulation**: ✅ **COMPLETED** - `--grad_accum_steps` for larger effective batches
+13. ✅ **Learning Rate Scheduling**: ✅ **COMPLETED** - Linear warmup + cosine annealing (`--warmup_steps`)
 14. **Regularization**: Add dropout tuning, weight decay tuning
 15. **Monitoring**: Add TensorBoard logging, better metrics
-16. **Distributed Training**: Multi-GPU support for larger models
+16. ✅ **Distributed Training**: ✅ **COMPLETED** - DDP via torchrun with DataParallel fallback. `torch.compile` available via `--compile`. `CUDAPrefetcher` overlaps CPU batch prep with GPU compute.
 17. **MCTS Integration**: Use model as policy/value network in MCTS search
 18. **Self-Play**: Add reinforcement learning component (AlphaZero-style)
 
