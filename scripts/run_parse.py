@@ -2,6 +2,7 @@
 import sys
 import os
 import time
+import argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -10,15 +11,25 @@ def main():
     from src.download import construct_lichess_url, download_file
     from src.data import pgn_to_samples
 
-    # --- Config ---
-    DATE = "2016-01"
-    MAX_GAMES = None
-    MIN_RATING = None
+    parser = argparse.ArgumentParser(description="Download and parse a Lichess PGN dataset.")
+    parser.add_argument("--date", type=str, default="2016-01",
+                        help="Date in YYYY-MM format (default: 2016-01)")
+    parser.add_argument("--max_games", type=int, default=None,
+                        help="Max games to parse (default: all)")
+    parser.add_argument("--min_rating", type=int, default=None,
+                        help="Minimum player ELO to include (default: all)")
+    parser.add_argument("--output", type=str, default="data",
+                        help="Directory for PGN file (default: data)")
+    args = parser.parse_args()
+
+    DATE = args.date
+    MAX_GAMES = args.max_games
+    MIN_RATING = args.min_rating
     PARSE_WORKERS = max(1, os.cpu_count() - 2)  # leave 2 cores for OS / main thread
 
-    os.makedirs("data", exist_ok=True)
+    os.makedirs(args.output, exist_ok=True)
     filename = f"lichess_db_standard_rated_{DATE}.pgn.zst"
-    pgn_path = os.path.join("data", filename)
+    pgn_path = os.path.join(args.output, filename)
 
     # --- Download ---
     if os.path.exists(pgn_path):

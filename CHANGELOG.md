@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Resume from checkpoint**: `--resume path/to/epoch_N.pt` continues training from a saved epoch. Requires `--cache_file` and `--epochs` (total desired epochs). Restores model, optimizer, and LR scheduler; preserves best validation loss so `_best.pt` is not overwritten by a worse run. Older checkpoints without scheduler state are supported (scheduler is fast-forwarded).
+- **`run_parse.py` CLI**: Script now accepts `--date`, `--max_games`, `--min_rating`, and `--output` so download-and-parse can be run with e.g. `python scripts/run_parse.py --date 2016-01 --min_rating 1500`.
 - **Direct Cache Loading**: New `--cache_file` argument loads a pre-built `.cache` file directly, bypassing PGN path and hash computation. `--pgn_file` is no longer required when `--cache_file` is provided.
 - **bf16 Mixed Precision**: Training and validation now run under `torch.amp.autocast` with bfloat16 by default on CUDA. Disable with `--no_amp`. No `GradScaler` needed (bf16 shares fp32's exponent range).
 - **LR Scheduler**: Cosine annealing with linear warmup. Configurable via `--warmup_steps` (default: 1000). Steps per optimizer update, not per batch.
@@ -26,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cached coordinate buffers**: `SquareEmbedding` now registers rank/file coordinate tensors as buffers (computed once at init) instead of rebuilding them on every forward pass.
 - **GNN adjacency matrix**: `ChessGNN` now computes and registers the normalised adjacency matrix as a buffer in `__init__`, replacing the fragile `hasattr`-based cache that did not survive `model.to(device)` or serialisation.
 - **`--no_multi_gpu`**: Now disables all multi-GPU parallelism (DataParallel and DDP).
+- **Checkpoint format**: Per-epoch checkpoints now include `scheduler_state_dict` and `best_val_loss` for correct resume behaviour.
+- **LR display**: When learning rate is 0 (warmup), the epoch header now shows e.g. `lr=0.00e+00 warmup -> 3.00e-04` to avoid confusion.
 
 ### Removed
 - **`--num_workers` CLI arg**: DataLoader workers are no longer used (in-memory tensor datasets don't benefit from multi-worker loading, and on Windows `spawn` clones the entire dataset to each worker).

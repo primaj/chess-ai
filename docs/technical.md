@@ -6,7 +6,7 @@
 3. [Data Processing Pipeline](#data-processing-pipeline)
 4. [Training Mechanism](#training-mechanism)
 5. [What the Model Learns](#what-the-model-learns)
-6. [Inference Process](#inference-process)
+6. [Inference Process](#inference-process) (incl. [ELO estimation](#elo-estimation))
 7. [Critical Analysis](#critical-analysis)
 8. [Potential Issues](#potential-issues)
 9. [Areas for Improvement](#areas-for-improvement)
@@ -399,8 +399,9 @@ The 0.5 weighting on value loss is arbitrary and not tuned. This suggests value 
    - Every `grad_accum_steps` batches: clip gradients, step optimizer, step LR scheduler, zero gradients
 
 2. **Checkpointing**:
-   - Saves checkpoint after each epoch (includes model state, optimizer state, config, and move encoder)
-   - Saves "best" model if validation loss improves (validation is now enabled with proper train/val split)
+   - Saves checkpoint after each epoch: `{save_prefix}_epoch_{N}.pt` (model, optimizer, scheduler, config, move encoder, `best_val_loss`)
+   - Saves "best" model if validation loss improves: `{save_prefix}_best.pt` (validation is enabled with proper train/val split)
+   - **Resuming**: Use `--resume path/to/epoch_N.pt` with `--cache_file` and `--epochs <total>`. The script restores model, optimizer, and LR scheduler (or fast-forwards the scheduler for older checkpoints), and preserves the previous best validation loss so it does not overwrite `_best.pt` with a worse model. See README "Resuming training".
 
 **Optimizer**: AdamW with learning rate 3e-4, weight decay 1e-5
 
@@ -420,6 +421,8 @@ The 0.5 weighting on value loss is arbitrary and not tuned. This suggests value 
 - Disable both with `--no_multi_gpu`.
 
 **`torch.compile`**: Opt-in via `--compile`. Fuses kernels, eliminates Python overhead in the forward/backward pass, and reduces memory traffic. Particularly effective for transformer models. Requires PyTorch 2.0+.
+
+**Resume from checkpoint**: `--resume path/to/epoch_N.pt` loads a per-epoch checkpoint (not `_best.pt`) and continues training. Requires `--cache_file` (same cache as the original run) and `--epochs` set to the desired **total** number of epochs. The run continues from epoch N+1 through the specified total. Checkpoints store `scheduler_state_dict` and `best_val_loss` so the LR schedule and best-model logic continue correctly; older checkpoints without these fields are supported (scheduler is fast-forwarded).
 
 ### Training Improvements (Implemented)
 
@@ -558,6 +561,15 @@ However, without explicit 2D structure, the model must learn these relationships
 4. Adjust for perspective: If Black to move, flip sign (since model predicts from side-to-move perspective)
 
 **Output**: Float in [-1, 1] representing expected outcome from White's perspective.
+
+### ELO estimation
+
+Model strength can be estimated in ELO by playing headless games against Stockfish with strength limiting (`UCI_LimitStrength` + `UCI_Elo`). The project provides:
+
+- **`src/game_runner.py`**: Headless game loop and players (model, random, UCI engine). Used to play full games without the UI.
+- **`scripts/estimate_elo.py`**: Runs the model vs Stockfish at configurable ELO levels, records W/D/L, and estimates model ELO from the score using the standard formula \(R_{\text{model}} = R_{\text{opp}} + 400 \cdot \log_{10}(S/(1-S))\).
+
+Run from the project root with Stockfish installed; see README "Estimating ELO" for usage.
 
 ---
 

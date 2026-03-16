@@ -93,10 +93,14 @@ Open `notebooks/train_notebook.ipynb` in Jupyter/VS Code and run the cells. The 
 
 **Option 2: Command Line**
 
-Place your PGN files in the `data/` directory, then run:
+Provide either a PGN file in `data/` or a pre-built cache file in `cache/`, then run:
 
 ```bash
-python src/train.py --pgn_file data/your_games.pgn --epochs 5 --batch_size 32
+# From PGN (parses and caches on first run)
+python src/train.py --pgn_file data/your_games.pgn --epochs 5
+
+# From cache (fastest; use after a previous parse or run scripts/run_parse.py)
+python src/train.py --cache_file cache/yourfile.cache --epochs 5
 ```
 
 Additional options:
@@ -104,17 +108,33 @@ Additional options:
 - `--min_rating`: Filter games by minimum player rating
 - `--hidden_dim`: Model hidden dimension (default: 256)
 - `--n_layers`: Number of transformer layers (default: 6)
-- `--lr`: Learning rate (default: 1e-4)
+- `--lr`: Learning rate (default: 3e-4)
+- `--batch_size`: Batch size (default: 2048)
+- `--grad_accum_steps`: Gradient accumulation steps (default: 1)
+- `--warmup_steps`: LR warmup steps before cosine decay (default: 1000)
 - `--val_split`: Validation split ratio (default: 0.1, i.e., 10%)
-- `--num_workers`: Number of DataLoader workers (default: auto-detect, min(8, cpu_count))
+- `--no_amp`: Disable bf16 mixed-precision (enabled by default on CUDA)
 - `--parse_workers`: Number of parallel workers for PGN parsing (default: 1, sequential)
 - `--no_cache`: Disable caching of parsed PGN data (caching is enabled by default)
 - `--cache_dir`: Directory for cache files (default: "cache")
+- `--no_multi_gpu`: Disable multi-GPU even when available
+- `--compile`: Enable torch.compile for kernel fusion (PyTorch 2.0+)
+- `--resume`: Path to a checkpoint to resume from (see below)
 
 The script will:
 - Parse PGN games into training samples (cached for faster subsequent runs)
 - Train the transformer model
 - Save checkpoints to `models/` (best model and per-epoch checkpoints)
+
+**Resuming training:** To continue from a saved epoch (e.g. after an interruption), use `--resume` with the same `--cache_file` and set `--epochs` to the **total** number of epochs you want (including those already completed):
+
+```bash
+# Example: resume from epoch 2 and train until 5 total epochs (3 more epochs)
+python src/train.py --resume models/minichess_transformer_epoch_2.pt \
+  --cache_file cache/yourfile.cache --epochs 5
+```
+
+With multi-GPU: `torchrun --nproc_per_node=N src/train.py --resume models/minichess_transformer_epoch_2.pt --cache_file cache/yourfile.cache --epochs 5`
 
 **Note:** Parsed PGN data is automatically cached to speed up subsequent training runs. Cache files are stored in the `cache/` directory and are keyed by the PGN file path and filtering parameters.
 
@@ -148,6 +168,27 @@ Or use the interactive CLI:
 python src/inference.py --checkpoint models/minichess_transformer.pt --interactive
 ```
 
+### Estimating ELO
+
+To estimate the strength of a trained model in ELO terms, run it against Stockfish with strength limiting. Stockfish supports UCI options to play at a set ELO (e.g. 1000–2500). The script runs games at one or more ELO levels and estimates your model’s rating from the win/draw/loss statistics.
+
+**Prerequisites:** Install Stockfish (e.g. `sudo apt install stockfish` on Linux, or download from [stockfishchess.org](https://stockfishchess.org)).
+
+**Run from the project root:**
+
+```bash
+# Auto-detect Stockfish and run 100 games per level at 1000, 1200, 1400 ELO
+python scripts/estimate_elo.py --stockfish /usr/bin/stockfish
+
+# Custom model, more games, and save results to CSV
+python scripts/estimate_elo.py --model models/minichess_transformer_best.pt \
+  --stockfish /path/to/stockfish --games 100 --elo 1000 1200 1400 --output results.csv
+```
+
+**Options:** `--model` (checkpoint path), `--stockfish` (engine path; omit to try auto-detect), `--games` (per level), `--elo` (one or more levels), `--output` (CSV path), `--time` (seconds per move for Stockfish).
+
+**Output:** The script prints a table of wins/draws/losses and an estimated model ELO per level. If multiple levels are used, it reports an average. Use the level where the model scores near 50% as a rough guide, or average across levels for a single estimate.
+
 ## Data
 
 The model trains on PGN (Portable Game Notation) files. You can obtain chess games from:
@@ -178,6 +219,20 @@ The download utility supports:
 **Note:** The code automatically handles both `.pgn` and `.pgn.zst` (compressed) files. You can use Lichess database files directly without decompressing them.
 
 Place PGN files in the `data/` directory before training.
+
+### Download and parse (script)
+
+The `run_parse.py` script downloads a Lichess PGN by date and parses it into the cache (optionally with rating and game limits). Run from the project root:
+
+```bash
+# Download 2016-01 and parse with minimum ELO 1500
+python scripts/run_parse.py --date 2016-01 --min_rating 1500
+
+# Options: --max_games N, --min_rating N, --output DIR (default: data)
+python scripts/run_parse.py --date 2016-01 --min_rating 1500 --output data
+```
+
+After it finishes, train with `--cache_file cache/<filename>.cache`.
 
 ## Project Structure
 

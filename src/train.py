@@ -138,11 +138,13 @@ def train_epoch(model, loader, optimizer, criterion_policy, criterion_value,
 def train(model, train_loader, val_loader, optimizer, n_epochs, device,
           save_dir="models", save_prefix="minichess_transformer",
           move_encoder_state=None, use_amp=False, grad_accum_steps=1,
-          scheduler=None, verbose=True):
+          scheduler=None, verbose=True, start_epoch=0, initial_best_val_loss=float('inf')):
     """Main training loop.
 
     Args:
         verbose: When False, suppresses prints and tqdm bars (non-main DDP ranks).
+        start_epoch: Epoch index to start from (0-based). Use when resuming.
+        initial_best_val_loss: Best validation loss so far (e.g. from checkpoint). Used so we don't overwrite the best model with a worse one when resuming.
     """
     criterion_policy = nn.CrossEntropyLoss()
     criterion_value = nn.MSELoss()
@@ -151,14 +153,18 @@ def train(model, train_loader, val_loader, optimizer, n_epochs, device,
     if verbose:
         os.makedirs(save_dir, exist_ok=True)
 
-    best_val_loss = float('inf')
+    best_val_loss = initial_best_val_loss
 
-    for epoch in range(n_epochs):
+    for epoch in range(start_epoch, n_epochs):
         current_lr = optimizer.param_groups[0]['lr']
+        base_lr = optimizer.param_groups[0].get('initial_lr', current_lr)
 
         if verbose:
             print(f"\n{'='*60}")
-            print(f"Epoch {epoch + 1}/{n_epochs}  (lr={current_lr:.2e})")
+            if current_lr <= 0 and base_lr > 0:
+                print(f"Epoch {epoch + 1}/{n_epochs}  (lr={current_lr:.2e} warmup -> {base_lr:.2e})")
+            else:
+                print(f"Epoch {epoch + 1}/{n_epochs}  (lr={current_lr:.2e})")
             print(f"{'='*60}")
 
         train_metrics = train_epoch(
@@ -203,9 +209,12 @@ def train(model, train_loader, val_loader, optimizer, n_epochs, device,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'config': base_model.config,
                 'train_loss': train_metrics['total_loss'],
+                'best_val_loss': best_val_loss,
             }
             if move_encoder_state is not None:
                 checkpoint_data['move_encoder'] = move_encoder_state
+            if scheduler is not None:
+                checkpoint_data['scheduler_state_dict'] = scheduler.state_dict()
             torch.save(checkpoint_data, checkpoint_path)
             print(f"Saved checkpoint to {checkpoint_path}")
 
@@ -254,11 +263,13 @@ def main():
 
     parser = argparse.ArgumentParser(description="Train MiniChessTransformer")
 
-    # Data source (one of --pgn_file or --cache_file is required)
+    # Data source (one of --pgn_file or --cache_file is required, unless --resume)
     parser.add_argument("--pgn_file", type=str, default=None,
                        help="Path to PGN file")
     parser.add_argument("--cache_file", type=str, default=None,
                        help="Path to pre-built .cache file (bypasses --pgn_file)")
+    parser.add_argument("--resume", type=str, default=None,
+                       help="Path to checkpoint to resume from (e.g. .../minichess_transformer_epoch_5.pt). Use with --cache_file and --epochs for total epochs)")
 
     # Training hyperparameters
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS,
@@ -331,8 +342,10 @@ def main():
 
     args = parser.parse_args()
 
-    if args.pgn_file is None and args.cache_file is None:
-        parser.error("Either --pgn_file or --cache_file is required")
+    if args.resume is None and args.pgn_file is None and args.cache_file is None:
+        parser.error("Either --pgn_file, --cache_file, or --resume is required")
+    if args.resume is not None and args.cache_file is None:
+        parser.error("When using --resume you must also pass --cache_file (same cache used for the original run)")
 
     # Resolve device — DDP pins each rank to its local GPU
     if is_distributed:
@@ -451,75 +464,128 @@ def main():
     if verbose:
         print(f"Train samples: {train_size:,}, Val samples: {val_size:,}")
 
-    # ------------------------------------------------------------------
-    #  Create model
-    # ------------------------------------------------------------------
-    if verbose:
-        print("\nCreating model...")
-    model = create_model(
-        vocab_size=14,
-        hidden_dim=args.hidden_dim,
-        n_layers=args.n_layers,
-        n_heads=args.n_heads,
-        move_vocab=move_vocab_size,
-        use_2d_pos_encoding=args.use_2d_pos_encoding,
-        use_patch_embeddings=args.use_patch_embeddings,
-        use_gnn=args.use_gnn,
-        pos_encoding_type=args.pos_encoding_type,
-        patch_size=args.patch_size,
-        conv_kernel=args.conv_kernel,
-        gnn_layers=args.gnn_layers,
-    ).to(device)
-
-    num_params = sum(p.numel() for p in model.parameters())
-    if verbose:
-        print(f"Model parameters: {num_params:,}")
-
-    # Multi-GPU: prefer DDP (via torchrun), fall back to DataParallel
-    n_gpus = torch.cuda.device_count()
-    if is_distributed:
-        local_rank = int(os.environ.get('LOCAL_RANK', 0))
-        model = DDP(model, device_ids=[local_rank])
-        if verbose:
-            print(f"Using DistributedDataParallel across {world_size} GPUs")
-    elif device.startswith("cuda") and n_gpus > 1 and not args.no_multi_gpu:
-        if verbose:
-            print(f"Wrapping model in DataParallel across {n_gpus} GPUs: "
-                  + ", ".join(torch.cuda.get_device_name(i) for i in range(n_gpus)))
-            print("  Tip: launch with torchrun for better multi-GPU scaling (DDP)")
-        model = nn.DataParallel(model)
-
-    if args.compile and hasattr(torch, 'compile'):
-        if verbose:
-            print("Compiling model with torch.compile...")
-        model = torch.compile(model)
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
-
-    # ------------------------------------------------------------------
-    #  LR Scheduler: linear warmup then cosine decay
-    # ------------------------------------------------------------------
     steps_per_epoch = math.ceil(len(train_loader) / args.grad_accum_steps)
-    total_steps = steps_per_epoch * args.epochs
-    warmup_steps = min(args.warmup_steps, total_steps)
 
-    def _lr_lambda(current_step: int) -> float:
-        if current_step < warmup_steps:
-            return current_step / max(1, warmup_steps)
-        progress = (current_step - warmup_steps) / max(1, total_steps - warmup_steps)
-        return 0.5 * (1.0 + math.cos(math.pi * progress))
+    # ------------------------------------------------------------------
+    #  Create or load model, optimizer, scheduler
+    # ------------------------------------------------------------------
+    if args.resume is not None:
+        if verbose:
+            print(f"\nResuming from checkpoint: {args.resume}")
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        config = ckpt['config']
+        model = create_model(**config).to(device)
+        model.load_state_dict(ckpt['model_state_dict'], strict=True)
+        num_params = sum(p.numel() for p in model.parameters())
+        if verbose:
+            print(f"Loaded model ({num_params:,} parameters) from epoch {ckpt['epoch'] + 1}")
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, _lr_lambda)
-    if verbose:
-        print(f"  LR schedule: {warmup_steps} warmup steps, "
-              f"{total_steps} total steps (cosine decay)")
+        start_epoch = ckpt['epoch'] + 1
+        initial_best_val_loss = ckpt.get('best_val_loss', float('inf'))
+        move_encoder_state = ckpt.get('move_encoder')
+        if move_encoder_state is None:
+            raise RuntimeError("Checkpoint missing move_encoder; cannot resume.")
 
-    # Prepare move encoder state for saving
-    move_encoder_state = {
-        'move_to_id': move_encoder.move_to_id,
-        'id_to_move': move_encoder.id_to_move,
-        'next_move_id': move_encoder.next_move_id,
-    }
+        n_gpus = torch.cuda.device_count()
+        if is_distributed:
+            local_rank = int(os.environ.get('LOCAL_RANK', 0))
+            model = DDP(model, device_ids=[local_rank])
+            if verbose:
+                print(f"Using DistributedDataParallel across {world_size} GPUs")
+        elif device.startswith("cuda") and n_gpus > 1 and not args.no_multi_gpu:
+            if verbose:
+                print(f"Wrapping model in DataParallel across {n_gpus} GPUs")
+            model = nn.DataParallel(model)
+
+        if args.compile and hasattr(torch, 'compile'):
+            if verbose:
+                print("Compiling model with torch.compile...")
+            model = torch.compile(model)
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+
+        total_steps = steps_per_epoch * args.epochs
+        warmup_steps = min(args.warmup_steps, total_steps)
+
+        def _lr_lambda(current_step: int) -> float:
+            if current_step < warmup_steps:
+                return current_step / max(1, warmup_steps)
+            progress = (current_step - warmup_steps) / max(1, total_steps - warmup_steps)
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, _lr_lambda)
+        if 'scheduler_state_dict' in ckpt and ckpt['scheduler_state_dict'] is not None:
+            scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+        else:
+            # Old checkpoint format: fast-forward scheduler to correct step
+            scheduler.last_epoch = start_epoch * steps_per_epoch
+        if verbose:
+            print(f"  LR schedule: resumed (total {total_steps} steps)")
+            print(f"  Next epoch: {start_epoch + 1} (training until {args.epochs} total epochs)")
+    else:
+        if verbose:
+            print("\nCreating model...")
+        model = create_model(
+            vocab_size=14,
+            hidden_dim=args.hidden_dim,
+            n_layers=args.n_layers,
+            n_heads=args.n_heads,
+            move_vocab=move_vocab_size,
+            use_2d_pos_encoding=args.use_2d_pos_encoding,
+            use_patch_embeddings=args.use_patch_embeddings,
+            use_gnn=args.use_gnn,
+            pos_encoding_type=args.pos_encoding_type,
+            patch_size=args.patch_size,
+            conv_kernel=args.conv_kernel,
+            gnn_layers=args.gnn_layers,
+        ).to(device)
+
+        num_params = sum(p.numel() for p in model.parameters())
+        if verbose:
+            print(f"Model parameters: {num_params:,}")
+
+        n_gpus = torch.cuda.device_count()
+        if is_distributed:
+            local_rank = int(os.environ.get('LOCAL_RANK', 0))
+            model = DDP(model, device_ids=[local_rank])
+            if verbose:
+                print(f"Using DistributedDataParallel across {world_size} GPUs")
+        elif device.startswith("cuda") and n_gpus > 1 and not args.no_multi_gpu:
+            if verbose:
+                print(f"Wrapping model in DataParallel across {n_gpus} GPUs: "
+                      + ", ".join(torch.cuda.get_device_name(i) for i in range(n_gpus)))
+                print("  Tip: launch with torchrun for better multi-GPU scaling (DDP)")
+            model = nn.DataParallel(model)
+
+        if args.compile and hasattr(torch, 'compile'):
+            if verbose:
+                print("Compiling model with torch.compile...")
+            model = torch.compile(model)
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
+
+        total_steps = steps_per_epoch * args.epochs
+        warmup_steps = min(args.warmup_steps, total_steps)
+
+        def _lr_lambda(current_step: int) -> float:
+            if current_step < warmup_steps:
+                return current_step / max(1, warmup_steps)
+            progress = (current_step - warmup_steps) / max(1, total_steps - warmup_steps)
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, _lr_lambda)
+        if verbose:
+            print(f"  LR schedule: {warmup_steps} warmup steps, "
+                  f"{total_steps} total steps (cosine decay)")
+
+        move_encoder_state = {
+            'move_to_id': move_encoder.move_to_id,
+            'id_to_move': move_encoder.id_to_move,
+            'next_move_id': move_encoder.next_move_id,
+        }
+        start_epoch = 0
+        initial_best_val_loss = float('inf')
 
     # ------------------------------------------------------------------
     #  Train
@@ -532,6 +598,7 @@ def main():
         move_encoder_state=move_encoder_state,
         use_amp=use_amp, grad_accum_steps=args.grad_accum_steps,
         scheduler=scheduler, verbose=verbose,
+        start_epoch=start_epoch, initial_best_val_loss=initial_best_val_loss,
     )
 
     if verbose:
