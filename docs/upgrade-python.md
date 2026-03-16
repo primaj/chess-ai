@@ -30,11 +30,43 @@ cd /Users/johnprimavesi/chess-ai
 pyenv local 3.10.13
 ```
 
-### Linux (Ubuntu/Debian)
+### Linux (Ubuntu/Debian and derivatives)
+
+**Pop!_OS, Linux Mint, etc.** — Use the same instructions as Ubuntu; these distros are Ubuntu-based and support the same PPAs and packages.
+
+**Option A: Default repositories (Ubuntu 22.04+)**  
+If your distro ships Python 3.10:
+
 ```bash
 sudo apt update
-sudo apt install python3.10 python3.10-venv python3.10-pip
+sudo apt install python3.10 python3.10-venv python3.10-dev
 ```
+
+**Option B: When Python 3.10 is not available (Ubuntu 20.04, some Debian, or minimal installs)**  
+Use the deadsnakes PPA (Ubuntu) or pyenv.
+
+**Ubuntu — deadsnakes PPA:**
+```bash
+sudo apt update
+sudo apt install software-properties-common
+sudo add-apt-repository ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install python3.10 python3.10-venv python3.10-dev
+```
+
+**Any Linux — pyenv (recommended if you need multiple Python versions):**
+```bash
+# Install pyenv (see https://github.com/pyenv/pyenv#installation)
+curl https://pyenv.run | bash
+# Restart shell or: source ~/.bashrc  (or ~/.zshrc)
+
+pyenv install 3.10.13
+cd /path/to/chess-ai
+pyenv local 3.10.13
+# Then: python3 -m venv venv  (uses pyenv’s 3.10)
+```
+
+**Note:** `python3.10-pip` is not required; use `python3.10 -m pip` or create a venv and use `pip` inside it.
 
 ## Upgrade Steps
 
