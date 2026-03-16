@@ -183,6 +183,7 @@ def make_ai_move(fen: str) -> Tuple[str, str, str]:
 def handle_user_move(fen: str) -> Tuple[str, str, str]:
     """
     Handle a move made by the user on the chessboard.
+    Does not trigger an AI response; use handle_user_move_then_ai for that.
     
     Args:
         fen: New FEN string after user move
@@ -212,6 +213,31 @@ def handle_user_move(fen: str) -> Tuple[str, str, str]:
     move_history = get_move_history()
     
     return current_board.fen(), status, move_history
+
+
+def handle_user_move_then_ai(fen: str) -> Tuple[str, str, str]:
+    """
+    Handle a move made by the user, then automatically play the AI's move
+    if it is the AI's turn (Black) and the game is not over.
+    
+    Args:
+        fen: New FEN string after user move
+    
+    Returns:
+        Tuple of (FEN, status, move history)
+    """
+    fen2, status, move_history = handle_user_move(fen)
+    
+    # If game is over or no model, stop
+    if current_board is None or current_model is None or current_move_encoder is None:
+        return fen2, status, move_history
+    if current_board.is_game_over():
+        return fen2, status, move_history
+    # Only auto-play when it's Black's turn (AI)
+    if current_board.turn != chess.BLACK:
+        return fen2, status, move_history
+    
+    return make_ai_move(fen2)
 
 
 def undo_move() -> Tuple[str, str, str]:
@@ -534,9 +560,9 @@ def create_chess_ui() -> gr.Blocks:
             outputs=[chessboard, game_status, move_history]
         )
         
-        # Handle user moves on chessboard
+        # Handle user moves on chessboard; AI responds automatically when it's Black's turn
         chessboard.move(
-            fn=handle_user_move,
+            fn=handle_user_move_then_ai,
             inputs=[chessboard],
             outputs=[chessboard, game_status, move_history]
         )
@@ -562,131 +588,56 @@ def create_chess_ui() -> gr.Blocks:
             outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle]
         )
         
-        # AI vs AI toggle handler
+        # AI vs AI: use a generator so we yield after each move and the UI updates continuously
+        def run_ai_vs_ai_stream(fen: str, delay: float):
+            """Generator: yield (fen, status, history) after each move until game over or stopped."""
+            global ai_vs_ai_running, current_board
+            
+            ai_vs_ai_running = True
+            if current_board is None or current_board.fen() != fen:
+                try:
+                    current_board = chess.Board(fen)
+                except Exception:
+                    current_board = chess.Board()
+            
+            while ai_vs_ai_running and not current_board.is_game_over():
+                new_fen, status, history, continue_flag = ai_vs_ai_step(current_board.fen(), delay)
+                yield new_fen, status, history
+                if not continue_flag:
+                    break
+                time.sleep(max(0.1, delay))
+            
+            ai_vs_ai_running = False
+            yield current_board.fen(), get_game_status(), get_move_history()
+        
         def on_toggle_change(fen: str, enabled: bool, delay: float):
-            """Handle toggle change - start/stop AI vs AI mode."""
+            """Toggle: when disabled yield once; when enabled run full AI vs AI stream."""
             global ai_vs_ai_running
             
-            if enabled and not ai_vs_ai_running:
-                ai_vs_ai_running = True
-                status = "AI vs AI enabled. Click 'Auto-Play' to start continuous gameplay."
-                return fen, status, get_move_history(), True
-            elif not enabled and ai_vs_ai_running:
+            if not enabled:
                 ai_vs_ai_running = False
-                status = "AI vs AI stopped."
-                return fen, status, get_move_history(), False
-            else:
-                return fen, get_game_status(), get_move_history(), enabled
+                yield fen, get_game_status(), get_move_history(), False
+                return
+            for new_fen, status, history in run_ai_vs_ai_stream(fen, delay):
+                yield new_fen, status, history, True
+            yield current_board.fen(), get_game_status(), get_move_history(), False
         
-        # Set up toggle handler
         ai_vs_ai_toggle.change(
             fn=on_toggle_change,
             inputs=[chessboard, ai_vs_ai_toggle, ai_vs_ai_delay],
             outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle]
         )
         
-        # Auto-play function - does one move and schedules next
-        def start_auto_play(fen: str, delay: float, enabled: bool):
-            """Start auto-play - makes one move and returns, will be called again if enabled."""
-            global ai_vs_ai_running, current_board
-            
-            if not enabled:
-                ai_vs_ai_running = False
-                return fen, get_game_status(), get_move_history(), False
-            
-            if not ai_vs_ai_running:
-                ai_vs_ai_running = True
-            
-            # Update board from FEN if needed
-            if current_board is None or current_board.fen() != fen:
-                try:
-                    current_board = chess.Board(fen)
-                except:
-                    current_board = chess.Board()
-            
-            # Check if game is over
-            if current_board.is_game_over():
-                ai_vs_ai_running = False
-                return current_board.fen(), get_game_status(), get_move_history(), False
-            
-            # Make one move
-            new_fen, status, history, continue_flag = ai_vs_ai_step(current_board.fen(), delay)
-            
-            # Update board
-            try:
-                current_board = chess.Board(new_fen)
-            except:
-                ai_vs_ai_running = False
-                return fen, "Error updating board", history, False
-            
-            # If game continues and auto-play is enabled, return True to trigger next move
-            if continue_flag and enabled and ai_vs_ai_running:
-                return new_fen, status, history, True
-            else:
-                ai_vs_ai_running = False
-                return new_fen, status, history, False
+        def on_auto_play_click(fen: str, delay: float):
+            """Auto-Play button: run full AI vs AI stream and keep toggle checked until done."""
+            for new_fen, status, history in run_ai_vs_ai_stream(fen, delay):
+                yield new_fen, status, history, True
+            yield current_board.fen(), get_game_status(), get_move_history(), False
         
-        # Auto-play with incremental UI updates using event chaining
-        # Use a timestamp-based counter to ensure state changes trigger events
-        auto_play_counter = gr.State(value=0)
-        
-        def trigger_auto_play(fen: str, delay: float):
-            """Trigger auto-play - makes first move."""
-            global ai_vs_ai_running
-            ai_vs_ai_running = True
-            result = start_auto_play(fen, delay, True)
-            # Extract continue flag (4th element) to chain next move
-            continue_flag = result[3] if len(result) > 3 else False
-            # Use timestamp to ensure unique value for change event
-            counter = int(time.time() * 1000) if continue_flag else 0
-            # Enable toggle and return result with counter to trigger next move
-            return result[0], result[1], result[2], True, counter
-        
-        def continue_auto_play_chain(fen: str, delay: float, enabled: bool, counter: int):
-            """Continue auto-play chain if enabled."""
-            global ai_vs_ai_running
-            
-            # Only continue if counter > 0 (meaning we should continue) and auto-play is running
-            # If counter is 0, return immediately - this should not block other buttons
-            if counter == 0:
-                # Return current state without changes - this should not interfere with other buttons
-                # We return the same values to avoid triggering unnecessary updates
-                return fen, get_game_status(), get_move_history(), enabled, 0
-            
-            # Check if auto-play should continue - use ai_vs_ai_running flag, not toggle state
-            # The toggle might be False initially, but we want to continue if ai_vs_ai_running is True
-            if not ai_vs_ai_running:
-                return fen, get_game_status(), get_move_history(), enabled, 0
-            
-            # Small delay before next move
-            time.sleep(min(delay, 0.5))
-            
-            # Make next move - always pass True for enabled since we're using ai_vs_ai_running flag
-            result = start_auto_play(fen, delay, True)
-            continue_flag = result[3] if len(result) > 3 else False
-            
-            # Use new timestamp to trigger next iteration (or set to 0 to stop)
-            next_counter = int(time.time() * 1000) if continue_flag else 0
-            
-            # Return with new counter to trigger next iteration
-            return result[0], result[1], result[2], result[3], next_counter
-        
-        # Auto-play button
         auto_play_trigger.click(
-            fn=trigger_auto_play,
+            fn=on_auto_play_click,
             inputs=[chessboard, ai_vs_ai_delay],
-            outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle, auto_play_counter]
-        )
-        
-        # Chain: when counter changes, automatically trigger next move
-        # Only trigger when counter > 0 to avoid interfering with other buttons
-        # Use queue=False to prevent blocking other events
-        auto_play_counter.change(
-            fn=continue_auto_play_chain,
-            inputs=[chessboard, ai_vs_ai_delay, ai_vs_ai_toggle, auto_play_counter],
-            outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle, auto_play_counter],
-            show_progress=False,
-            queue=False
+            outputs=[chessboard, game_status, move_history, ai_vs_ai_toggle]
         )
     
     return demo
